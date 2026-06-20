@@ -56,6 +56,20 @@ pub struct SearchHit {
     pub summary: String,
 }
 
+#[derive(Serialize)]
+pub struct Health {
+    pub score: u32,
+    pub issues: Vec<String>,
+    pub ok: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct DepNode {
+    pub name: String,
+    pub version: String,
+    pub requires: Vec<String>,
+}
+
 // ---------- 纯 Rust：site-packages 扫描 ----------
 
 /// 由 python.exe 路径推断 site-packages 目录（venv 的 Scripts/ 或 prefix 根）。
@@ -346,7 +360,40 @@ pub fn list_outdated(py: &Path) -> Result<Vec<Outdated>> {
         .collect())
 }
 
-pub fn install(py: &Path, spec: &str, mirror_url: Option<&str>, upgrade: bool) -> Result<String> {
+pub fn install(
+    py: &Path,
+    spec: &str,
+    mirror_url: Option<&str>,
+    upgrade: bool,
+    use_uv: bool,
+) -> Result<String> {
+    run_capture(build_install_cmd(py, spec, mirror_url, upgrade, use_uv), "install")
+}
+
+/// 构造安装命令：use_uv 且检测到 uv 则用 `uv pip install --python <py>`（快），否则 `python -m pip install`。
+fn build_install_cmd(
+    py: &Path,
+    spec: &str,
+    mirror_url: Option<&str>,
+    upgrade: bool,
+    use_uv: bool,
+) -> Command {
+    if use_uv {
+        if let Some(uvp) = uv_path() {
+            let mut c = Command::new(uvp);
+            c.arg("pip").arg("install").arg("--python").arg(py);
+            c.env("PYTHONUTF8", "1");
+            no_window(&mut c);
+            if upgrade {
+                c.arg("--upgrade");
+            }
+            if let Some(m) = mirror_url {
+                c.arg("--index-url").arg(m);
+            }
+            c.arg(spec);
+            return c;
+        }
+    }
     let mut c = pip(py);
     c.arg("install").arg("--no-input");
     if upgrade {
@@ -356,7 +403,7 @@ pub fn install(py: &Path, spec: &str, mirror_url: Option<&str>, upgrade: bool) -
         c.arg("-i").arg(m);
     }
     c.arg(spec);
-    run_capture(c, "pip install")
+    c
 }
 
 pub fn uninstall(py: &Path, name: &str) -> Result<String> {
@@ -400,18 +447,10 @@ pub fn install_stream(
     spec: &str,
     mirror_url: Option<&str>,
     upgrade: bool,
+    use_uv: bool,
     on_line: &(dyn Fn(&str) + Send + Sync),
 ) -> Result<bool> {
-    let mut c = pip(py);
-    c.arg("install").arg("--no-input");
-    if upgrade {
-        c.arg("--upgrade");
-    }
-    if let Some(m) = mirror_url {
-        c.arg("-i").arg(m);
-    }
-    c.arg(spec);
-    stream_cmd(c, on_line)
+    stream_cmd(build_install_cmd(py, spec, mirror_url, upgrade, use_uv), on_line)
 }
 
 pub fn uninstall_stream(
@@ -580,4 +619,119 @@ fn load_pypi_names(cache_dir: &Path) -> Result<Vec<String>> {
         std::fs::write(&cache, t).ok();
     }
     Ok(names)
+}
+
+// ---------- uv 加速 ----------
+
+fn uv_path() -> Option<std::path::PathBuf> {
+    let mut c = Command::new("where");
+    c.arg("uv");
+    no_window(&mut c);
+    let out = c.output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .map(|l| std::path::PathBuf::from(l.trim()))
+        .filter(|p| p.is_file())
+}
+
+/// 返回 uv 版本（若已安装），供设置页显示。
+pub fn uv_version() -> Option<String> {
+    let mut c = Command::new("uv");
+    c.arg("--version");
+    no_window(&mut c);
+    let out = c.output().ok()?;
+    if out.status.success() {
+        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    } else {
+        None
+    }
+}
+
+// ---------- 环境健康评分 ----------
+
+pub fn health(py: &Path) -> Result<Health> {
+    let mut issues = Vec::new();
+    let mut ok = Vec::new();
+    let mut score: u32 = 100;
+
+    let out = pip(py)
+        .arg("check")
+        .output()
+        .map_err(|e| PvmError::Config(format!("运行 pip check 失败: {e}")))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let lower = text.to_lowercase();
+    if out.status.success() && (lower.contains("no broken") || text.trim().is_empty()) {
+        ok.push("依赖无冲突（pip check）".into());
+    } else {
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            issues.push(format!("依赖冲突: {}", line.trim()));
+        }
+        if issues.is_empty() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            for line in err.lines().filter(|l| !l.trim().is_empty()) {
+                issues.push(format!("依赖冲突: {}", line.trim()));
+            }
+        }
+        score = score.saturating_sub(30);
+    }
+
+    let pkgs = scan_installed(py);
+    if pkgs.iter().any(|p| p.name.eq_ignore_ascii_case("pip")) {
+        ok.push("pip 已安装".into());
+    } else {
+        issues.push("缺少 pip".into());
+        score = score.saturating_sub(20);
+    }
+    if pkgs.iter().any(|p| p.name.eq_ignore_ascii_case("setuptools")) {
+        ok.push("setuptools 已安装".into());
+    } else {
+        issues.push("缺少 setuptools（部分包构建会失败）".into());
+        score = score.saturating_sub(10);
+    }
+    ok.push(format!("已装包数: {}", pkgs.len()));
+
+    Ok(Health { score, issues, ok })
+}
+
+// ---------- 依赖图（纯 Rust 扫 METADATA）----------
+
+pub fn dep_graph(py: &Path) -> Vec<DepNode> {
+    let mut out = Vec::new();
+    for sp in site_packages_dirs(py) {
+        let rd = match std::fs::read_dir(&sp) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        for e in rd.flatten() {
+            let fname = e.file_name().to_string_lossy().to_string();
+            if !fname.ends_with(".dist-info") {
+                continue;
+            }
+            let stem = fname.trim_end_matches(".dist-info");
+            let (name, version) = stem
+                .rsplit_once('-')
+                .map(|(n, v)| (display_name(n), v.to_string()))
+                .unwrap_or_else(|| (stem.to_string(), String::new()));
+            if let Ok(text) = std::fs::read_to_string(e.path().join("METADATA")) {
+                let mut requires: Vec<String> = parse_requires(&text)
+                    .iter()
+                    .map(|r| dep_name(r))
+                    .filter(|x| !x.is_empty())
+                    .collect();
+                requires.sort();
+                requires.dedup();
+                out.push(DepNode {
+                    name,
+                    version,
+                    requires,
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out
 }

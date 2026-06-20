@@ -436,6 +436,8 @@ pub struct ConfigInfo {
     default_source: String,
     pip_mirror: Option<String>,
     proxy: String,
+    use_uv: bool,
+    uv_version: Option<String>,
 }
 
 #[tauri::command]
@@ -446,6 +448,8 @@ pub fn get_config() -> Result<ConfigInfo, String> {
         default_source: c.default_source_resolved().cli_value().to_string(),
         pip_mirror: c.pip_mirror,
         proxy: c.proxy.unwrap_or_else(|| "direct".into()),
+        use_uv: c.use_uv.unwrap_or(false),
+        uv_version: pvm::pkg::uv_version(),
     })
 }
 
@@ -522,6 +526,55 @@ pub async fn ai_diagnose(error_log: String) -> Result<String, String> {
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+// ---------- 批 3：漏洞扫描 / PATH 诊断 / 健康评分 / 依赖图 / uv ----------
+
+#[tauri::command]
+pub async fn osv_scan(py_exe: String) -> Result<Vec<pvm::osv::VulnHit>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let pkgs = pvm::pkg::list_packages(std::path::Path::new(&py_exe)).map_err(|e| e.to_string())?;
+        let pairs: Vec<(String, String)> = pkgs.into_iter().map(|p| (p.name, p.version)).collect();
+        pvm::osv::scan(&pairs).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn path_diag() -> Vec<pvm::system::PathPython> {
+    pvm::system::path_pythons()
+}
+
+#[tauri::command]
+pub async fn pkg_health(py_exe: String) -> Result<pvm::pkg::Health, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        pvm::pkg::health(std::path::Path::new(&py_exe)).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn pkg_dep_graph(py_exe: String) -> Result<Vec<pvm::pkg::DepNode>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok::<_, String>(pvm::pkg::dep_graph(std::path::Path::new(&py_exe)))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn uv_status() -> Option<String> {
+    pvm::pkg::uv_version()
+}
+
+#[tauri::command]
+pub fn set_use_uv(enabled: bool) -> Result<(), String> {
+    let p = paths()?;
+    let mut c = Config::load(&p).map_err(|e| e.to_string())?;
+    c.use_uv = Some(enabled);
+    c.save(&p).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -689,9 +742,11 @@ pub async fn pkg_install(
     mirror: Option<String>,
     upgrade: bool,
 ) -> Result<String, String> {
+    let p = paths()?;
     tauri::async_runtime::spawn_blocking(move || {
         let url = resolve_mirror_url(mirror);
-        pvm::pkg::install(std::path::Path::new(&py_exe), &spec, url.as_deref(), upgrade)
+        let use_uv = Config::load(&p).ok().and_then(|c| c.use_uv).unwrap_or(false);
+        pvm::pkg::install(std::path::Path::new(&py_exe), &spec, url.as_deref(), upgrade, use_uv)
             .map_err(|e| e.to_string())
     })
     .await
@@ -823,6 +878,11 @@ pub fn pkg_batch(
     mirror: Option<String>,
 ) -> Result<(), String> {
     let url = resolve_mirror_url(mirror);
+    let use_uv = paths()
+        .ok()
+        .and_then(|p| Config::load(&p).ok())
+        .and_then(|c| c.use_uv)
+        .unwrap_or(false);
     std::thread::spawn(move || {
         let py = PathBuf::from(&py_exe);
         let app_line = app.clone();
@@ -837,8 +897,8 @@ pub fn pkg_batch(
             );
             let r = match action.as_str() {
                 "uninstall" => pvm::pkg::uninstall_stream(&py, name, &on_line),
-                "upgrade" => pvm::pkg::install_stream(&py, name, url.as_deref(), true, &on_line),
-                _ => pvm::pkg::install_stream(&py, name, url.as_deref(), false, &on_line),
+                "upgrade" => pvm::pkg::install_stream(&py, name, url.as_deref(), true, use_uv, &on_line),
+                _ => pvm::pkg::install_stream(&py, name, url.as_deref(), false, use_uv, &on_line),
             };
             let ok = r.unwrap_or(false);
             let _ = app.emit(

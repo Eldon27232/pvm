@@ -71,6 +71,46 @@ fn collect_from_registry(out: &mut Vec<SystemPython>, seen: &mut HashSet<String>
     }
 }
 
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct PathPython {
+    pub path: String,
+    pub dir: String,
+    pub fake: bool,
+    pub effective: bool,
+}
+
+/// 解析 PATH，列出会被命令行 `python` 命中的 exe（按顺序），标记 WindowsApps 假 python 与生效项。
+pub fn path_pythons() -> Vec<PathPython> {
+    let mut out: Vec<PathPython> = Vec::new();
+    let path = std::env::var("PATH").unwrap_or_default();
+    let mut seen = HashSet::new();
+    for dir in path.split(';') {
+        let dir = dir.trim();
+        if dir.is_empty() {
+            continue;
+        }
+        let p = Path::new(dir).join("python.exe");
+        if p.is_file() {
+            let key = p.to_string_lossy().to_lowercase();
+            if !seen.insert(key) {
+                continue;
+            }
+            let fake = dir.to_lowercase().contains("windowsapps");
+            out.push(PathPython {
+                path: p.to_string_lossy().to_string(),
+                dir: dir.to_string(),
+                fake,
+                effective: false,
+            });
+        }
+    }
+    // PATH 中第一个 python.exe 会被真正调用（即使是 WindowsApps 的 stub）。
+    if let Some(first) = out.first_mut() {
+        first.effective = true;
+    }
+    out
+}
+
 fn collect_from_launcher(out: &mut Vec<SystemPython>, seen: &mut HashSet<String>) {
     let output = match Command::new("py").arg("--list-paths").output() {
         Ok(o) if o.status.success() => o,

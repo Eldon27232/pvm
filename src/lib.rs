@@ -12,6 +12,7 @@ pub mod config;
 pub mod download;
 pub mod error;
 pub mod net;
+pub mod osv;
 pub mod paths;
 pub mod pip;
 pub mod pkg;

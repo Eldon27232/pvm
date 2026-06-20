@@ -67,6 +67,12 @@ fn main() {
             commands::get_ai_config,
             commands::set_ai_config,
             commands::ai_diagnose,
+            commands::osv_scan,
+            commands::path_diag,
+            commands::pkg_health,
+            commands::pkg_dep_graph,
+            commands::uv_status,
+            commands::set_use_uv,
         ])
         .run(tauri::generate_context!())
         .expect("运行 pvm GUI 失败");

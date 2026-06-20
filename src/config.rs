@@ -20,6 +20,8 @@ pub struct Config {
     pub ai_base_url: Option<String>,
     pub ai_key: Option<String>,
     pub ai_model: Option<String>,
+    /// 启用 uv 加速（检测到 uv 时用 uv pip 装包）。
+    pub use_uv: Option<bool>,
 }
 
 impl Config {

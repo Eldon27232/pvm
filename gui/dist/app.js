@@ -214,6 +214,9 @@ async function renderPackages(c) {
       </div>
       <div class="actions">
         <button class="btn btn-sm" id="pkgoutdated">${t("pkg_check_outdated")}</button>
+        <button class="btn btn-sm" id="pkgvuln">${t("pkg_scan_vuln")}</button>
+        <button class="btn btn-sm" id="pkghealth">${t("pkg_health")}</button>
+        <button class="btn btn-sm" id="pkgdeps">${t("pkg_deps")}</button>
         <button class="btn btn-sm" id="pkgexport">${t("pkg_export")}</button>
         <button class="btn btn-sm" id="pkgimport">${t("pkg_import")}</button>
         <button class="btn btn-sm" id="pkgrefresh">${t("btn_refresh")}</button>
@@ -275,6 +278,9 @@ async function renderPackages(c) {
   document.getElementById("batch-upgrade").addEventListener("click", () => runBatch("upgrade"));
   document.getElementById("batch-uninstall").addEventListener("click", () => runBatch("uninstall"));
   document.getElementById("sel-clear").addEventListener("click", () => { state.pkgSelected = new Set(); paintPackages(currentFilter()); });
+  document.getElementById("pkgvuln").addEventListener("click", showVulns);
+  document.getElementById("pkghealth").addEventListener("click", showHealth);
+  document.getElementById("pkgdeps").addEventListener("click", showDepGraph);
 
   loadPackages();
 }
@@ -371,6 +377,79 @@ function showOpError(err) {
       r.innerHTML = `<div class="empty">${t("err_prefix")}${esc(e)}</div>`;
     }
   });
+}
+
+// ---------- 批3：漏洞扫描 / 体检 / 依赖图 / PATH 诊断 ----------
+async function showVulns() {
+  openModal(`<div class="detail-head"><div class="detail-title">${t("pkg_scan_vuln")}</div><button class="icon-btn" id="modal-close">✕</button></div><div class="list-scroll" id="vuln-body" style="max-height:55vh"><div class="empty"><span class="spin"></span> ${t("vuln_scanning")}</div></div>`);
+  document.getElementById("modal-close").addEventListener("click", closeModal);
+  try {
+    const vulns = await invoke("osv_scan", { pyExe: state.pkgPy });
+    const body = document.getElementById("vuln-body");
+    if (!vulns.length) { body.innerHTML = `<div class="muted">✓ ${t("vuln_none")}</div>`; return; }
+    body.innerHTML = `<div class="panel-hint">${t("vuln_found", { n: vulns.length })}</div>` + vulns.map((v) => `
+      <div class="row"><div class="grow">
+        <div class="vname">${esc(v.package)} <span class="muted">${esc(v.version)}</span> <span class="badge badge-ft">${esc(v.vuln_id)}</span></div>
+        <div class="vmeta">${esc(v.summary || "")}${v.fixed ? " · " + t("vuln_fixed") + ": " + esc(v.fixed) : ""}</div>
+      </div>
+      <div class="actions"><button class="btn btn-sm" data-vulnid="${esc(v.vuln_id)}">${t("pkg_detail")}</button></div></div>`).join("");
+    body.querySelectorAll("[data-vulnid]").forEach((b) => b.addEventListener("click", () => openExt(`https://osv.dev/vulnerability/${b.dataset.vulnid}`)));
+  } catch (e) { document.getElementById("vuln-body").innerHTML = `<div class="empty">${t("err_prefix")}${esc(e)}</div>`; }
+}
+
+async function showHealth() {
+  openModal(`<div class="detail-head"><div class="detail-title">${t("pkg_health")}</div><button class="icon-btn" id="modal-close">✕</button></div><div id="health-body"><div class="empty"><span class="spin"></span> ${t("loading")}</div></div>`);
+  document.getElementById("modal-close").addEventListener("click", closeModal);
+  try {
+    const h = await invoke("pkg_health", { pyExe: state.pkgPy });
+    const color = h.score >= 80 ? "var(--green)" : h.score >= 50 ? "var(--amber)" : "var(--red)";
+    document.getElementById("health-body").innerHTML = `
+      <div style="font-size:42px;font-weight:700;color:${color};text-align:center;margin:6px 0">${h.score}<span style="font-size:18px;color:var(--text-dim)"> / 100</span></div>
+      ${h.issues.map((i) => `<div class="kv"><span style="color:var(--red)">✕ ${esc(i)}</span></div>`).join("")}
+      ${h.ok.map((o) => `<div class="kv"><span style="color:var(--green)">✓ ${esc(o)}</span></div>`).join("")}`;
+  } catch (e) { document.getElementById("health-body").innerHTML = `<div class="empty">${t("err_prefix")}${esc(e)}</div>`; }
+}
+
+async function showDepGraph() {
+  openModal(`<div class="detail-head"><div class="detail-title">${t("pkg_deps")}</div><button class="icon-btn" id="modal-close">✕</button></div>
+    <div class="searchbar"><input type="text" id="dep-q" placeholder="${t("pkg_search")}"/></div>
+    <div class="list-scroll" id="dep-body" style="max-height:50vh"><div class="empty"><span class="spin"></span> ${t("loading")}</div></div>`);
+  document.getElementById("modal-close").addEventListener("click", closeModal);
+  try {
+    const nodes = await invoke("pkg_dep_graph", { pyExe: state.pkgPy });
+    const revMap = {};
+    nodes.forEach((n) => n.requires.forEach((r) => { const k = r.toLowerCase(); (revMap[k] = revMap[k] || []).push(n.name); }));
+    const paint = (filter) => {
+      const body = document.getElementById("dep-body");
+      let list = nodes;
+      if (filter) list = list.filter((n) => n.name.toLowerCase().includes(filter.toLowerCase()));
+      body.innerHTML = list.slice(0, 200).map((n) => {
+        const rev = revMap[n.name.toLowerCase()] || [];
+        return `<div class="row"><div class="grow">
+          <div class="vname">${esc(n.name)} <span class="muted">${esc(n.version)}</span></div>
+          <div class="vmeta">${t("dep_requires")}: ${n.requires.length ? esc(n.requires.join(", ")) : "—"}</div>
+          <div class="vmeta">${t("dep_required_by")}: ${rev.length ? esc(rev.join(", ")) : "—"}</div>
+        </div></div>`;
+      }).join("") || `<div class="empty">—</div>`;
+    };
+    paint("");
+    document.getElementById("dep-q").addEventListener("input", (e) => paint(e.target.value.trim()));
+  } catch (e) { document.getElementById("dep-body").innerHTML = `<div class="empty">${t("err_prefix")}${esc(e)}</div>`; }
+}
+
+async function showPathDiag() {
+  openModal(`<div class="detail-head"><div class="detail-title">${t("path_diag")}</div><button class="icon-btn" id="modal-close">✕</button></div><div class="list-scroll" id="path-body" style="max-height:55vh"><div class="empty"><span class="spin"></span> ${t("loading")}</div></div>`);
+  document.getElementById("modal-close").addEventListener("click", closeModal);
+  try {
+    const list = await invoke("path_diag");
+    const body = document.getElementById("path-body");
+    if (!list.length) { body.innerHTML = `<div class="muted">${t("path_none")}</div>`; return; }
+    body.innerHTML = `<div class="panel-hint">${t("path_hint")}</div>` + list.map((p) => `
+      <div class="row"><div class="grow">
+        <div class="vname">${esc(p.path)} ${p.effective ? `<span class="badge badge-global">${t("path_effective")}</span>` : ""} ${p.fake ? `<span class="badge badge-ft">${t("path_fake")}</span>` : ""}</div>
+        <div class="vmeta">${esc(p.dir)}</div>
+      </div></div>`).join("");
+  } catch (e) { document.getElementById("path-body").innerHTML = `<div class="empty">${t("err_prefix")}${esc(e)}</div>`; }
 }
 
 function currentFilter() { const el = document.getElementById("pkgsearch"); return el ? el.value.trim() : ""; }
@@ -918,7 +997,15 @@ async function renderSettings(c) {
       <div class="kv"><span class="k">${t("diag_global")}</span><span>${doc.global ? esc(doc.global) : t("none")}</span></div>
       <div class="kv"><span class="k">${t("diag_count")}</span><span>${doc.installed_count}</span></div>
       <div class="kv"><span class="k">${t("diag_proxy")}</span><span>${esc(doc.proxy)}</span></div>
-      <div class="actions" style="margin-top:12px"><button class="btn btn-primary" id="initbtn">${t("btn_init")}</button></div>
+      <div class="kv"><span class="k">uv ${t("uv_accel")}</span>
+        <span>${cfg.uv_version ? esc(cfg.uv_version) : t("uv_not_found")}
+          <label class="check" style="display:inline-flex;margin-left:8px"><input type="checkbox" id="useuv" ${cfg.use_uv ? "checked" : ""} ${cfg.uv_version ? "" : "disabled"}/> ${t("uv_enable")}</label>
+        </span>
+      </div>
+      <div class="actions" style="margin-top:12px">
+        <button class="btn btn-primary" id="initbtn">${t("btn_init")}</button>
+        <button class="btn" id="pathdiag">${t("path_diag")}</button>
+      </div>
     </div>
     <div class="card">
       <div class="panel-hint">${t("settings_proxy")}</div>
@@ -985,6 +1072,9 @@ async function renderSettings(c) {
     toast(t("done"), "ok");
     render();
   });
+  document.getElementById("pathdiag").addEventListener("click", showPathDiag);
+  const useuv = document.getElementById("useuv");
+  if (useuv) useuv.addEventListener("change", async (e) => { await call("set_use_uv", { enabled: e.target.checked }); toast(t("done"), "ok"); });
 }
 
 // ---------- 启动 ----------
