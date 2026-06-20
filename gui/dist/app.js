@@ -13,6 +13,8 @@ const state = {
   setGlobal: true,
   pkgPy: null,
   pkgOutdated: {},
+  pkgCacheByPy: {},
+  interpCache: null,
 };
 // 安装进度状态：id -> {downloaded,total,stage,done,success,error}
 const progress = {};
@@ -169,7 +171,11 @@ async function renderInstalled(c) {
 let pkgCache = [];
 
 async function renderPackages(c) {
-  const [interps, mirrors] = await Promise.all([call("list_interpreters"), call("mirror_list")]);
+  const [interps, mirrors] = await Promise.all([
+    state.interpCache || call("list_interpreters"),
+    call("mirror_list"),
+  ]);
+  state.interpCache = interps;
   if (!interps.length) {
     c.innerHTML = `<div class="panel-head"><div class="panel-title">${t("nav_packages")}</div></div><div class="empty">${t("pkg_no_interp")}</div>`;
     return;
@@ -183,7 +189,10 @@ async function renderPackages(c) {
   c.innerHTML = `
     <div class="panel-head"><div class="panel-title">${t("nav_packages")}</div></div>
     <div class="card">
-      <div class="field"><label>${t("pkg_interpreter")}</label><select id="pkgpy">${iopts}</select></div>
+      <div class="inline">
+        <div class="field" style="flex:1"><label>${t("pkg_interpreter")}</label><select id="pkgpy">${iopts}</select></div>
+        <button class="btn" id="pkgterm" style="align-self:flex-end;margin-bottom:12px">${t("pkg_open_terminal")}</button>
+      </div>
       <div class="inline">
         <div class="field" style="flex:1;min-width:180px"><label>${t("pkg_install_spec")}</label><input type="text" id="pkgspec" placeholder="requests / numpy==1.26.0"/></div>
         <div class="field" style="min-width:130px"><label>${t("venv_mirror")}</label><select id="pkgmirror">${mopts}</select></div>
@@ -203,7 +212,8 @@ async function renderPackages(c) {
   const mirror = () => { const el = document.getElementById("pkgmirror"); return el ? el.value || null : null; };
 
   document.getElementById("pkgpy").addEventListener("change", (e) => { state.pkgPy = e.target.value; state.pkgOutdated = {}; loadPackages(); });
-  document.getElementById("pkgrefresh").addEventListener("click", () => { state.pkgOutdated = {}; loadPackages(); });
+  document.getElementById("pkgrefresh").addEventListener("click", () => { state.pkgCacheByPy[state.pkgPy] = null; state.pkgOutdated = {}; loadPackages(); });
+  document.getElementById("pkgterm").addEventListener("click", async () => { try { await invoke("open_terminal", { pyExe: state.pkgPy }); } catch (e) { toast(t("err_prefix") + e, "err"); } });
   document.getElementById("pkgsearch").addEventListener("input", (e) => paintPackages(e.target.value.trim()));
   document.getElementById("pkginstall").addEventListener("click", async () => {
     const spec = document.getElementById("pkgspec").value.trim();
@@ -241,12 +251,16 @@ async function renderPackages(c) {
 
 async function loadPackages() {
   const box = document.getElementById("pkglist");
-  if (box) box.innerHTML = `<div class="empty"><span class="spin"></span> ${t("loading")}</div>`;
+  const cached = state.pkgCacheByPy[state.pkgPy];
+  if (cached) { pkgCache = cached; paintPackages(currentFilter()); }
+  else if (box) box.innerHTML = skeletonRows();
   try {
-    pkgCache = await invoke("pkg_list", { pyExe: state.pkgPy });
-    paintPackages("");
+    const fresh = await invoke("pkg_list", { pyExe: state.pkgPy });
+    state.pkgCacheByPy[state.pkgPy] = fresh;
+    pkgCache = fresh;
+    paintPackages(currentFilter());
   } catch (e) {
-    if (box) box.innerHTML = `<div class="empty">${t("err_prefix")}${esc(e)}</div>`;
+    if (!cached && box) box.innerHTML = `<div class="empty">${t("err_prefix")}${esc(e)}</div>`;
   }
 }
 
@@ -291,12 +305,7 @@ function paintPackages(filter) {
     })
   );
   box.querySelectorAll("[data-pkgshow]").forEach((b) =>
-    b.addEventListener("click", async () => {
-      try {
-        const txt = await invoke("pkg_show", { pyExe: py(), name: b.dataset.pkgshow });
-        alert(txt);
-      } catch (e) { toast(t("err_prefix") + e, "err"); }
-    })
+    b.addEventListener("click", () => showDetail(b.dataset.pkgshow))
   );
 }
 
@@ -304,6 +313,82 @@ async function pkgOp(fn, runningMsg) {
   toast(runningMsg, "");
   try { await fn(); toast(t("done"), "ok"); } catch (e) { toast(t("err_prefix") + e, "err"); }
 }
+
+function currentFilter() { const el = document.getElementById("pkgsearch"); return el ? el.value.trim() : ""; }
+function curMirror() { const el = document.getElementById("pkgmirror"); return el ? el.value || null : null; }
+function skeletonRows() {
+  return Array.from({ length: 9 }).map(() => `<div class="row skeleton"><div class="grow"><div class="sk-line"></div></div></div>`).join("");
+}
+
+// ---------- 富详情模态 ----------
+async function showDetail(name) {
+  openModal(`<div class="empty"><span class="spin"></span> ${t("loading")}</div>`);
+  try {
+    const d = await invoke("pkg_detail", { pyExe: state.pkgPy, name });
+    renderDetail(d);
+  } catch (e) {
+    openModal(`<div class="detail-head"><div class="detail-title">${esc(name)}</div><button class="icon-btn" id="modal-close">✕</button></div><div class="empty">${t("err_prefix")}${esc(e)}</div>`);
+    const cb = document.getElementById("modal-close"); if (cb) cb.addEventListener("click", closeModal);
+  }
+}
+
+function renderDetail(d) {
+  const links = [];
+  if (d.home_page) links.push([t("dt_home"), d.home_page]);
+  (d.project_urls || []).forEach(([k, u]) => links.push([k, u]));
+  const linkHtml = links.map(([k, u]) => `<a class="lnk" data-url="${esc(u)}">${esc(k)}</a>`).join(" · ");
+  const verOpts = (d.available_versions || []).slice(0, 400).map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
+  const chips = (arr) => (arr && arr.length) ? arr.map((x) => `<span class="badge dep" data-dep="${esc(x)}">${esc(x)}</span>`).join(" ") : `<span class="muted">${t("none")}</span>`;
+  openModal(`
+    <div class="detail-head">
+      <div>
+        <div class="detail-title">${esc(d.name)} <span class="muted">${esc(d.version)}</span></div>
+        <div class="muted">${esc(d.summary || "")}</div>
+      </div>
+      <button class="icon-btn" id="modal-close">✕</button>
+    </div>
+    <div class="detail-body">
+      <div class="kv"><span class="k">${t("dt_author")}</span><span>${esc(d.author || t("none"))}</span></div>
+      <div class="kv"><span class="k">${t("dt_license")}</span><span>${esc(d.license || t("none"))}</span></div>
+      <div class="kv"><span class="k">${t("dt_location")}</span><span>${esc(d.location || t("none"))}</span></div>
+      ${linkHtml ? `<div class="kv"><span class="k">${t("dt_links")}</span><span>${linkHtml}</span></div>` : ""}
+      <div class="kv"><span class="k">Requires</span><span>${chips(d.requires)}</span></div>
+      <div class="kv"><span class="k">Required-by</span><span>${chips(d.required_by)}</span></div>
+      <div class="inline" style="margin:12px 0">
+        <div class="field" style="min-width:160px"><label>${t("dt_versions")}</label><select id="dt-ver">${verOpts || `<option>—</option>`}</select></div>
+        <button class="btn btn-primary" id="dt-install" style="align-self:flex-end;margin-bottom:12px">${t("dt_install_ver")}</button>
+        <button class="btn" id="dt-copy" style="align-self:flex-end;margin-bottom:12px">${t("dt_copy_install")}</button>
+      </div>
+      ${d.readme ? `<div class="detail-readme"><div class="k">${t("dt_readme")}</div><pre>${esc(d.readme.slice(0, 8000))}</pre></div>` : ""}
+    </div>`);
+  document.getElementById("modal-close").addEventListener("click", closeModal);
+  document.getElementById("dt-install").addEventListener("click", async () => {
+    const v = document.getElementById("dt-ver").value;
+    if (!v) return;
+    closeModal();
+    await pkgOp(() => invoke("pkg_install", { pyExe: state.pkgPy, spec: `${d.name}==${v}`, mirror: curMirror(), upgrade: true }), t("pkg_installing", { spec: `${d.name}==${v}` }));
+    state.pkgCacheByPy[state.pkgPy] = null;
+    loadPackages();
+  });
+  document.getElementById("dt-copy").addEventListener("click", () => { navigator.clipboard.writeText(`pip install ${d.name}`); toast(t("copied"), "ok"); });
+  document.querySelectorAll("#modal .lnk").forEach((a) => a.addEventListener("click", () => openExt(a.dataset.url)));
+  document.querySelectorAll("#modal .dep").forEach((s) => s.addEventListener("click", () => showDetail(s.dataset.dep)));
+}
+
+function openModal(html) {
+  let m = document.getElementById("modal");
+  if (!m) {
+    m = document.createElement("div");
+    m.id = "modal";
+    m.className = "modal";
+    document.body.appendChild(m);
+    m.addEventListener("click", (e) => { if (e.target === m) closeModal(); });
+  }
+  m.innerHTML = `<div class="modal-card">${html}</div>`;
+  m.style.display = "flex";
+}
+function closeModal() { const m = document.getElementById("modal"); if (m) m.style.display = "none"; }
+async function openExt(url) { try { await invoke("open_url", { url }); } catch (e) { try { await navigator.clipboard.writeText(url); toast(t("copied"), "ok"); } catch (_) {} } }
 
 // ---------- 面板：安装新版本 ----------
 async function renderInstall(c) {

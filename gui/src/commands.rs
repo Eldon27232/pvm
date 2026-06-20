@@ -658,3 +658,47 @@ pub async fn pkg_install_requirements(
     .await
     .map_err(|e| e.to_string())?
 }
+
+#[tauri::command]
+pub async fn pkg_detail(py_exe: String, name: String) -> Result<pvm::pkg::PkgDetail, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        pvm::pkg::package_detail(std::path::Path::new(&py_exe), &name).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 打开一个新 PowerShell 窗口，把选定解释器目录前置到本会话 PATH（python/pip 即指向它）。
+#[tauri::command]
+pub fn open_terminal(py_exe: String) -> Result<(), String> {
+    let py = PathBuf::from(&py_exe);
+    let dir = py.parent().ok_or_else(|| "无效解释器路径".to_string())?;
+    let scripts = dir.join("Scripts");
+    let cmd = format!(
+        "$env:Path='{};{};'+$env:Path; Write-Host 'pvm: 本会话 python 已指向 {}' -ForegroundColor Green; python --version",
+        dir.display(),
+        scripts.display(),
+        dir.display()
+    );
+    let mut c = std::process::Command::new("powershell");
+    c.args(["-NoExit", "-Command", &cmd]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0000_0010); // CREATE_NEW_CONSOLE
+    }
+    c.spawn().map_err(|e| format!("启动终端失败: {e}"))?;
+    Ok(())
+}
+
+/// 用系统默认浏览器打开 http(s) 链接（仅允许 http/https）。
+#[tauri::command]
+pub fn open_url(url: String) -> Result<(), String> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("仅允许 http(s) 链接".into());
+    }
+    let mut c = std::process::Command::new("rundll32.exe");
+    c.args(["url.dll,FileProtocolHandler", &url]);
+    c.spawn().map_err(|e| format!("打开链接失败: {e}"))?;
+    Ok(())
+}

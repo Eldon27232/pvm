@@ -35,6 +35,9 @@ fn main() {
             commands::pkg_show,
             commands::pkg_freeze,
             commands::pkg_install_requirements,
+            commands::pkg_detail,
+            commands::open_terminal,
+            commands::open_url,
         ])
         .run(tauri::generate_context!())
         .expect("运行 pvm GUI 失败");
