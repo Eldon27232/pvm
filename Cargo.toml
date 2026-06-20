@@ -1,0 +1,70 @@
+[package]
+name = "pvm"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Windows 平台 Python 多版本管理器"
+
+[lib]
+name = "pvm"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pvm"
+path = "src/main.rs"
+
+[[bin]]
+name = "pvm-shim"
+path = "src/bin/shim.rs"
+
+[[bin]]
+name = "pvm-shimw"
+path = "src/bin/shimw.rs"
+
+[dependencies]
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# 地基层依赖（功能模块依赖随实现逐层加入，见 docs/SPEC.md §5 完整清单）
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+thiserror = "2"
+directories = "6"
+
+# 下载 / 解压 / 校验
+ureq = { version = "3", features = ["json"] }
+sha2 = "0.11"
+hex = "0.4"
+indicatif = "0.18"
+tar = "0.4"
+flate2 = "1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+zstd = { version = "0.13", optional = true }
+
+# Windows API / 配置写入
+winreg = "0.55"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+    "Win32_UI_WindowsAndMessaging",
+] }
+rust-ini = "0.21"
+url = "2"
+
+# 双源远端枚举 / 版本解析
+serde_json = "1"
+regex = "1"
+semver = { version = "1", features = ["serde"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[features]
+default = []
+# 启用后才能安装 --flavor full（pgo-full.tar.zst），引入 zstd / C 工具链
+zstd-full = ["dep:zstd"]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
