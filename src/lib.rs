@@ -12,6 +12,7 @@ pub mod download;
 pub mod error;
 pub mod paths;
 pub mod pip;
+pub mod pkg;
 pub mod resolve;
 pub mod shim;
 pub mod source_pbs;

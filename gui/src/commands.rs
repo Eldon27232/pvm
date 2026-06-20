@@ -112,7 +112,14 @@ pub struct RemoteInfo {
 }
 
 #[tauri::command]
-pub fn list_remote(source: String, refresh: bool) -> Result<Vec<RemoteInfo>, String> {
+pub async fn list_remote(source: String, refresh: bool) -> Result<Vec<RemoteInfo>, String> {
+    // 网络拉取放到阻塞线程池，避免阻塞 UI 线程（修复加载卡死）。
+    tauri::async_runtime::spawn_blocking(move || list_remote_blocking(source, refresh))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn list_remote_blocking(source: String, refresh: bool) -> Result<Vec<RemoteInfo>, String> {
     let p = paths()?;
     let src = parse_source(&source)?;
     let installed: std::collections::HashSet<String> = resolve::list_installed(&p)
@@ -521,6 +528,133 @@ pub fn init_pvm() -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn list_system_pythons() -> Vec<pvm::system::SystemPython> {
-    pvm::system::list_system_pythons()
+pub async fn list_system_pythons() -> Vec<pvm::system::SystemPython> {
+    tauri::async_runtime::spawn_blocking(pvm::system::list_system_pythons)
+        .await
+        .unwrap_or_default()
+}
+
+// ---------- 解释器枚举 + 包管理 ----------
+
+#[derive(Serialize)]
+pub struct Interpreter {
+    label: String,
+    py_exe: String,
+    kind: String,
+}
+
+/// 汇总所有可管理的解释器：pvm 安装的 + 虚拟环境 + 系统已装。
+#[tauri::command]
+pub fn list_interpreters() -> Result<Vec<Interpreter>, String> {
+    let p = paths()?;
+    let mut out = Vec::new();
+    for v in resolve::list_installed(&p).unwrap_or_default() {
+        out.push(Interpreter {
+            label: format!("pvm · {} ({})", v.xyz(), v.source.id_suffix()),
+            py_exe: p.python_exe(&v).display().to_string(),
+            kind: "pvm".into(),
+        });
+    }
+    for m in venv::venv_list(&p).unwrap_or_default() {
+        let py = p.venvs().join(&m.name).join("Scripts").join("python.exe");
+        if py.exists() {
+            out.push(Interpreter {
+                label: format!("venv · {}", m.name),
+                py_exe: py.display().to_string(),
+                kind: "venv".into(),
+            });
+        }
+    }
+    for s in pvm::system::list_system_pythons() {
+        out.push(Interpreter {
+            label: format!("系统 · Python {}", s.version),
+            py_exe: s.path,
+            kind: "system".into(),
+        });
+    }
+    Ok(out)
+}
+
+fn resolve_mirror_url(alias: Option<String>) -> Option<String> {
+    alias.and_then(|a| pvm::pip::lookup_mirror(&a).map(|m| m.index_url.to_string()))
+}
+
+#[tauri::command]
+pub async fn pkg_list(py_exe: String) -> Result<Vec<pvm::pkg::Package>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        pvm::pkg::list_packages(std::path::Path::new(&py_exe)).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn pkg_outdated(py_exe: String) -> Result<Vec<pvm::pkg::Outdated>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        pvm::pkg::list_outdated(std::path::Path::new(&py_exe)).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn pkg_install(
+    py_exe: String,
+    spec: String,
+    mirror: Option<String>,
+    upgrade: bool,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let url = resolve_mirror_url(mirror);
+        pvm::pkg::install(std::path::Path::new(&py_exe), &spec, url.as_deref(), upgrade)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn pkg_uninstall(py_exe: String, name: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        pvm::pkg::uninstall(std::path::Path::new(&py_exe), &name).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn pkg_show(py_exe: String, name: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        pvm::pkg::show(std::path::Path::new(&py_exe), &name).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn pkg_freeze(py_exe: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        pvm::pkg::freeze(std::path::Path::new(&py_exe)).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn pkg_install_requirements(
+    py_exe: String,
+    req_file: String,
+    mirror: Option<String>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let url = resolve_mirror_url(mirror);
+        pvm::pkg::install_requirements(
+            std::path::Path::new(&py_exe),
+            std::path::Path::new(&req_file),
+            url.as_deref(),
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }

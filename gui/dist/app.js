@@ -11,6 +11,8 @@ const state = {
   installed: [],
   threads: 8,
   setGlobal: true,
+  pkgPy: null,
+  pkgOutdated: {},
 };
 // 安装进度状态：id -> {downloaded,total,stage,done,success,error}
 const progress = {};
@@ -86,6 +88,7 @@ function render() {
   c.innerHTML = `<div class="empty"><span class="spin"></span> ${t("loading")}</div>`;
   ({
     installed: renderInstalled,
+    packages: renderPackages,
     install: renderInstall,
     venv: renderVenv,
     mirror: renderMirror,
@@ -160,6 +163,146 @@ async function renderInstalled(c) {
       }
     })
   );
+}
+
+// ---------- 面板：包管理 ----------
+let pkgCache = [];
+
+async function renderPackages(c) {
+  const [interps, mirrors] = await Promise.all([call("list_interpreters"), call("mirror_list")]);
+  if (!interps.length) {
+    c.innerHTML = `<div class="panel-head"><div class="panel-title">${t("nav_packages")}</div></div><div class="empty">${t("pkg_no_interp")}</div>`;
+    return;
+  }
+  if (!state.pkgPy || !interps.some((i) => i.py_exe === state.pkgPy)) state.pkgPy = interps[0].py_exe;
+  const iopts = interps
+    .map((i) => `<option value="${esc(i.py_exe)}" ${i.py_exe === state.pkgPy ? "selected" : ""}>${esc(i.label)}</option>`)
+    .join("");
+  const mopts = `<option value="">${t("none")}</option>` + mirrors.map((m) => `<option value="${esc(m.alias)}">${esc(m.display)}</option>`).join("");
+
+  c.innerHTML = `
+    <div class="panel-head"><div class="panel-title">${t("nav_packages")}</div></div>
+    <div class="card">
+      <div class="field"><label>${t("pkg_interpreter")}</label><select id="pkgpy">${iopts}</select></div>
+      <div class="inline">
+        <div class="field" style="flex:1;min-width:180px"><label>${t("pkg_install_spec")}</label><input type="text" id="pkgspec" placeholder="requests / numpy==1.26.0"/></div>
+        <div class="field" style="min-width:130px"><label>${t("venv_mirror")}</label><select id="pkgmirror">${mopts}</select></div>
+        <button class="btn btn-primary" id="pkginstall" style="align-self:flex-end;margin-bottom:12px">${t("btn_install")}</button>
+      </div>
+      <div class="actions">
+        <button class="btn btn-sm" id="pkgoutdated">${t("pkg_check_outdated")}</button>
+        <button class="btn btn-sm" id="pkgexport">${t("pkg_export")}</button>
+        <button class="btn btn-sm" id="pkgimport">${t("pkg_import")}</button>
+        <button class="btn btn-sm" id="pkgrefresh">${t("btn_refresh")}</button>
+      </div>
+    </div>
+    <div class="searchbar"><input type="text" id="pkgsearch" placeholder="${t("pkg_search")}"/></div>
+    <div class="list-scroll" id="pkglist"><div class="empty"><span class="spin"></span> ${t("loading")}</div></div>`;
+
+  const py = () => state.pkgPy;
+  const mirror = () => { const el = document.getElementById("pkgmirror"); return el ? el.value || null : null; };
+
+  document.getElementById("pkgpy").addEventListener("change", (e) => { state.pkgPy = e.target.value; state.pkgOutdated = {}; loadPackages(); });
+  document.getElementById("pkgrefresh").addEventListener("click", () => { state.pkgOutdated = {}; loadPackages(); });
+  document.getElementById("pkgsearch").addEventListener("input", (e) => paintPackages(e.target.value.trim()));
+  document.getElementById("pkginstall").addEventListener("click", async () => {
+    const spec = document.getElementById("pkgspec").value.trim();
+    if (!spec) return;
+    await pkgOp(() => invoke("pkg_install", { pyExe: py(), spec, mirror: mirror(), upgrade: false }), t("pkg_installing", { spec }));
+    document.getElementById("pkgspec").value = "";
+    loadPackages();
+  });
+  document.getElementById("pkgoutdated").addEventListener("click", async () => {
+    toast(t("pkg_checking"), "");
+    try {
+      const od = await invoke("pkg_outdated", { pyExe: py() });
+      state.pkgOutdated = {};
+      od.forEach((o) => (state.pkgOutdated[o.name.toLowerCase()] = o.latest_version));
+      toast(t("pkg_outdated_n", { n: od.length }), "ok");
+      paintPackages(document.getElementById("pkgsearch").value.trim());
+    } catch (e) { toast(t("err_prefix") + e, "err"); }
+  });
+  document.getElementById("pkgexport").addEventListener("click", async () => {
+    try {
+      const txt = await invoke("pkg_freeze", { pyExe: py() });
+      await navigator.clipboard.writeText(txt);
+      toast(t("pkg_exported"), "ok");
+    } catch (e) { toast(t("err_prefix") + e, "err"); }
+  });
+  document.getElementById("pkgimport").addEventListener("click", async () => {
+    const f = prompt(t("pkg_import_prompt"));
+    if (!f) return;
+    await pkgOp(() => invoke("pkg_install_requirements", { pyExe: py(), reqFile: f, mirror: mirror() }), t("pkg_importing"));
+    loadPackages();
+  });
+
+  loadPackages();
+}
+
+async function loadPackages() {
+  const box = document.getElementById("pkglist");
+  if (box) box.innerHTML = `<div class="empty"><span class="spin"></span> ${t("loading")}</div>`;
+  try {
+    pkgCache = await invoke("pkg_list", { pyExe: state.pkgPy });
+    paintPackages("");
+  } catch (e) {
+    if (box) box.innerHTML = `<div class="empty">${t("err_prefix")}${esc(e)}</div>`;
+  }
+}
+
+function paintPackages(filter) {
+  const box = document.getElementById("pkglist");
+  if (!box) return;
+  let list = pkgCache;
+  if (filter) list = list.filter((p) => p.name.toLowerCase().includes(filter.toLowerCase()));
+  if (!list.length) { box.innerHTML = `<div class="empty">${t("pkg_empty")}</div>`; return; }
+  box.innerHTML = list
+    .map((p) => {
+      const latest = state.pkgOutdated[p.name.toLowerCase()];
+      return `
+      <div class="row">
+        <div class="grow">
+          <div class="vname">${esc(p.name)} <span class="muted">${esc(p.version)}</span>
+            ${latest ? `<span class="badge badge-ft">↑ ${esc(latest)}</span>` : ""}
+          </div>
+        </div>
+        <div class="actions">
+          ${latest ? `<button class="btn btn-sm btn-primary" data-pkgup="${esc(p.name)}">${t("pkg_upgrade")}</button>` : ""}
+          <button class="btn btn-sm" data-pkgshow="${esc(p.name)}">${t("pkg_detail")}</button>
+          <button class="btn btn-sm btn-danger" data-pkgrm="${esc(p.name)}">${t("btn_uninstall")}</button>
+        </div>
+      </div>`;
+    })
+    .join("");
+  const py = () => state.pkgPy;
+  const mirror = () => { const el = document.getElementById("pkgmirror"); return el ? el.value || null : null; };
+  box.querySelectorAll("[data-pkgup]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      await pkgOp(() => invoke("pkg_install", { pyExe: py(), spec: b.dataset.pkgup, mirror: mirror(), upgrade: true }), t("pkg_upgrading", { name: b.dataset.pkgup }));
+      delete state.pkgOutdated[b.dataset.pkgup.toLowerCase()];
+      loadPackages();
+    })
+  );
+  box.querySelectorAll("[data-pkgrm]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      if (!confirm(t("pkg_confirm_rm", { name: b.dataset.pkgrm }))) return;
+      await pkgOp(() => invoke("pkg_uninstall", { pyExe: py(), name: b.dataset.pkgrm }), t("pkg_removing", { name: b.dataset.pkgrm }));
+      loadPackages();
+    })
+  );
+  box.querySelectorAll("[data-pkgshow]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      try {
+        const txt = await invoke("pkg_show", { pyExe: py(), name: b.dataset.pkgshow });
+        alert(txt);
+      } catch (e) { toast(t("err_prefix") + e, "err"); }
+    })
+  );
+}
+
+async function pkgOp(fn, runningMsg) {
+  toast(runningMsg, "");
+  try { await fn(); toast(t("done"), "ok"); } catch (e) { toast(t("err_prefix") + e, "err"); }
 }
 
 // ---------- 面板：安装新版本 ----------

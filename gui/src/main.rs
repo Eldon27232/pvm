@@ -27,6 +27,14 @@ fn main() {
             commands::doctor,
             commands::init_pvm,
             commands::list_system_pythons,
+            commands::list_interpreters,
+            commands::pkg_list,
+            commands::pkg_outdated,
+            commands::pkg_install,
+            commands::pkg_uninstall,
+            commands::pkg_show,
+            commands::pkg_freeze,
+            commands::pkg_install_requirements,
         ])
         .run(tauri::generate_context!())
         .expect("运行 pvm GUI 失败");
