@@ -25,6 +25,11 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "externalBin": [
+      "binaries/pvm",
+      "binaries/pvm-shim",
+      "binaries/pvm-shimw"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

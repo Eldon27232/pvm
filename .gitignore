@@ -2,3 +2,4 @@
 /.testroot*
 *.pdb
 /gui/gen
+/gui/binaries
