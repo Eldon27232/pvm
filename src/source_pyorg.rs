@@ -124,19 +124,39 @@ fn save_cache(path: &Path, list: &[PyOrgRelease]) {
 
 /// 官方安装器静默安装到版本目录（per-user，免 UAC；缓存 exe 以备卸载）。
 pub fn install_via_installer(v: &PythonVersion, paths: &Paths) -> Result<()> {
-    let xyz = v.xyz();
-    std::fs::create_dir_all(paths.cache())?;
-    std::fs::create_dir_all(paths.versions())?;
-    std::fs::create_dir_all(paths.logs())?;
-
-    let exe = paths.cache().join(format!("python-{xyz}-amd64.exe"));
+    let exe = prepare_installer_exe(v, paths)?;
     download_to(&DownloadOpts {
         url: &installer_url(v),
         dest: &exe,
         expect_sha256: None,
         quiet: false,
     })?;
+    install_from_installer_exe(v, paths, &exe)
+}
 
+/// 同 install_via_installer，但安装器用多线程下载并通过 on_progress 回调进度（GUI 用）。
+pub fn install_via_installer_progress(
+    v: &PythonVersion,
+    paths: &Paths,
+    threads: usize,
+    on_progress: &(dyn Fn(u64, u64) + Send + Sync),
+) -> Result<()> {
+    let exe = prepare_installer_exe(v, paths)?;
+    crate::download::download_parallel(&installer_url(v), &exe, None, threads, on_progress)?;
+    install_from_installer_exe(v, paths, &exe)
+}
+
+fn prepare_installer_exe(v: &PythonVersion, paths: &Paths) -> Result<std::path::PathBuf> {
+    let xyz = v.xyz();
+    std::fs::create_dir_all(paths.cache())?;
+    std::fs::create_dir_all(paths.versions())?;
+    std::fs::create_dir_all(paths.logs())?;
+    Ok(paths.cache().join(format!("python-{xyz}-amd64.exe")))
+}
+
+/// 已下载的安装器 exe → 静默安装 + 旧版本备份/回滚。
+fn install_from_installer_exe(v: &PythonVersion, paths: &Paths, exe: &Path) -> Result<()> {
+    let xyz = v.xyz();
     let target = paths.version_dir(v);
     // 旧版本若存在，先移到备份目录；安装成功后删除备份，失败则回滚，避免失败时旧版本丢失
     let backup = if target.exists() {
@@ -168,7 +188,7 @@ pub fn install_via_installer(v: &PythonVersion, paths: &Paths) -> Result<()> {
         "Include_tcltk=1".to_string(),
     ];
 
-    let status = Command::new(&exe)
+    let status = Command::new(exe)
         .args(&args)
         .arg("/log")
         .arg(&log)

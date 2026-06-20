@@ -217,6 +217,32 @@ pub fn install_pbs(asset: &PbsAsset, v: &PythonVersion, paths: &Paths, no_verify
     result
 }
 
+/// 同 install_pbs，但用多线程分块下载并通过 on_progress(已下载, 总量) 回调进度（GUI 用）。
+pub fn install_pbs_progress(
+    asset: &PbsAsset,
+    v: &PythonVersion,
+    paths: &Paths,
+    no_verify: bool,
+    threads: usize,
+    on_progress: &(dyn Fn(u64, u64) + Send + Sync),
+) -> Result<()> {
+    std::fs::create_dir_all(paths.cache())?;
+    std::fs::create_dir_all(paths.versions())?;
+
+    let file = paths.cache().join(&asset.file_name);
+    let sha = if no_verify { None } else { asset.sha256.as_deref() };
+    crate::download::download_parallel(&asset.download_url, &file, sha, threads, on_progress)?;
+
+    let tmp = paths.versions().join(format!(".tmp-{}", v.canonical()));
+    let regrouped = paths.versions().join(format!(".tmp2-{}", v.canonical()));
+    let result = extract_and_place(asset, v, paths, &file, &tmp, &regrouped);
+    if result.is_err() {
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::remove_dir_all(&regrouped).ok();
+    }
+    result
+}
+
 fn extract_and_place(
     asset: &PbsAsset,
     v: &PythonVersion,

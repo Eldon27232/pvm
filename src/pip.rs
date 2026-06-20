@@ -158,6 +158,29 @@ pub fn pip_mirror_reset(scope: Scope, venv: Option<&Path>, paths: &Paths) -> Res
     Ok(())
 }
 
+/// 返回当前 pip.ini 的 (index-url, trusted-host)，未配置则 None（GUI 用）。
+pub fn pip_mirror_current(
+    scope: Scope,
+    venv: Option<&Path>,
+    paths: &Paths,
+) -> Result<Option<(String, Option<String>)>> {
+    let path = pip_ini_path(scope, venv, paths)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let conf = Ini::load_from_file(&path)
+        .map_err(|e| PvmError::Config(format!("读取 pip.ini 失败: {e}")))?;
+    Ok(conf
+        .get_from(Some("global"), "index-url")
+        .map(|idx| {
+            (
+                idx.to_string(),
+                conf.get_from(Some("global"), "trusted-host")
+                    .map(|s| s.to_string()),
+            )
+        }))
+}
+
 pub fn pip_mirror_show(scope: Scope, venv: Option<&Path>, paths: &Paths) -> Result<()> {
     let path = pip_ini_path(scope, venv, paths)?;
     if !path.exists() {

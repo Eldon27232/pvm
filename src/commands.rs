@@ -422,7 +422,9 @@ fn cmd_venv(cmd: VenvCmd, yes: bool, paths: &Paths) -> Result<()> {
                 system_site_packages,
                 mirror: mirror.as_deref(),
             };
-            venv::venv_create(&opts, paths)?;
+            let target = venv::venv_create(&opts, paths)?;
+            println!("已创建 venv: {}", target.display());
+            println!("{}", venv::activation_hint(&target));
             shim::rehash(paths).ok();
         }
         VenvCmd::List => {

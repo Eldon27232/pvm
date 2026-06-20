@@ -29,7 +29,7 @@ pub struct VenvCreateOpts<'a> {
     pub mirror: Option<&'a str>,
 }
 
-pub fn venv_create(opts: &VenvCreateOpts, paths: &Paths) -> Result<()> {
+pub fn venv_create(opts: &VenvCreateOpts, paths: &Paths) -> Result<PathBuf> {
     let config = Config::load(paths)?;
     let default_source = config.default_source_resolved();
 
@@ -105,8 +105,7 @@ pub fn venv_create(opts: &VenvCreateOpts, paths: &Paths) -> Result<()> {
         pip::pip_mirror_set(m, Scope::Venv, Some(&target), false, paths)?;
     }
 
-    print_activation_hint(&target, &v.canonical());
-    Ok(())
+    Ok(target)
 }
 
 pub fn venv_list(paths: &Paths) -> Result<Vec<VenvMeta>> {
@@ -152,13 +151,11 @@ pub fn venv_path(name: &str, paths: &Paths) -> PathBuf {
     paths.venvs().join(name)
 }
 
-fn print_activation_hint(venv: &Path, ver: &str) {
-    let scripts = venv.join("Scripts");
-    let s = scripts.display().to_string();
-    println!("已创建 venv（基于 {ver}）：{}", venv.display());
-    println!("激活方式：");
-    println!("  PowerShell : & '{s}\\Activate.ps1'");
-    println!("  cmd.exe    : {s}\\activate.bat");
-    println!("  Git Bash   : source '{}/activate'", s.replace('\\', "/"));
-    println!("  （PowerShell 若被执行策略拦截：Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass）");
+/// 返回 venv 激活提示文本（不打印，供 CLI/GUI 各自决定输出方式）。
+pub fn activation_hint(venv: &Path) -> String {
+    let s = venv.join("Scripts").display().to_string();
+    let fwd = s.replace('\\', "/");
+    format!(
+        "激活方式：\n  PowerShell : & '{s}\\Activate.ps1'\n  cmd.exe    : {s}\\activate.bat\n  Git Bash   : source '{fwd}/activate'\n  （PowerShell 若被执行策略拦截：Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass）"
+    )
 }
