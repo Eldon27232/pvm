@@ -67,6 +67,7 @@ fn main() {
             commands::get_ai_config,
             commands::set_ai_config,
             commands::ai_diagnose,
+            commands::ai_find_packages,
             commands::osv_scan,
             commands::path_diag,
             commands::pkg_health,

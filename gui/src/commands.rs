@@ -528,6 +528,41 @@ pub async fn ai_diagnose(error_log: String) -> Result<String, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// AI 自然语言找包：返回推荐的包（name + 推荐理由放在 summary）。
+#[tauri::command]
+pub async fn ai_find_packages(query: String) -> Result<Vec<pvm::pkg::SearchHit>, String> {
+    let p = paths()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let c = Config::load(&p).map_err(|e| e.to_string())?;
+        let cfg = pvm::ai::AiConfig {
+            provider: c.ai_provider.unwrap_or_else(|| "openai".into()),
+            base_url: c
+                .ai_base_url
+                .filter(|s| !s.trim().is_empty())
+                .ok_or("未配置 AI Base URL（在设置页填写）")?,
+            key: c
+                .ai_key
+                .filter(|k| !k.trim().is_empty())
+                .ok_or("未配置 AI API Key（在设置页填写）")?,
+            model: c
+                .ai_model
+                .filter(|s| !s.trim().is_empty())
+                .ok_or("未配置 AI 模型（在设置页填写）")?,
+        };
+        let recs = pvm::ai::find_packages(&cfg, &query).map_err(|e| e.to_string())?;
+        Ok(recs
+            .into_iter()
+            .map(|(name, reason)| pvm::pkg::SearchHit {
+                name,
+                version: String::new(),
+                summary: reason,
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // ---------- 批 3：漏洞扫描 / PATH 诊断 / 健康评分 / 依赖图 / uv ----------
 
 #[tauri::command]

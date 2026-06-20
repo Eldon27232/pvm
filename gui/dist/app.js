@@ -550,19 +550,19 @@ async function openExt(url) { try { await invoke("open_url", { url }); } catch (
 async function showSearch() {
   openModal(`
     <div class="detail-head"><div class="detail-title">${t("pkg_search_pypi")}</div><button class="icon-btn" id="modal-close">✕</button></div>
-    <div class="searchbar"><input type="text" id="srch-q" placeholder="${t("pkg_search_ph")}"/><button class="btn btn-primary" id="srch-go">${t("pkg_search_pypi")}</button></div>
+    <div class="searchbar"><input type="text" id="srch-q" placeholder="${t("pkg_search_ph")}"/><button class="btn btn-primary" id="srch-go">${t("pkg_search_pypi")}</button><button class="btn" id="srch-ai">${t("ai_find")}</button></div>
     <div class="list-scroll" id="srch-list" style="max-height:50vh"><div class="muted">${t("pkg_search_hint")}</div></div>`);
   document.getElementById("modal-close").addEventListener("click", closeModal);
-  const run = async () => {
+  const run = async (useAi) => {
     const q = document.getElementById("srch-q").value.trim();
     if (!q) return;
     const box = document.getElementById("srch-list");
-    box.innerHTML = `<div class="empty"><span class="spin"></span> ${t("loading")}</div>`;
+    box.innerHTML = `<div class="empty"><span class="spin"></span> ${useAi ? t("ai_finding") : t("loading")}</div>`;
     try {
-      const hits = await invoke("pkg_search", { query: q });
+      const hits = await invoke(useAi ? "ai_find_packages" : "pkg_search", { query: q });
       if (!hits.length) { box.innerHTML = `<div class="empty">${t("pkg_search_none")}</div>`; return; }
       box.innerHTML = hits.map((h) => `
-        <div class="row"><div class="grow"><div class="vname">${esc(h.name)}</div></div>
+        <div class="row"><div class="grow"><div class="vname">${esc(h.name)}</div>${h.summary ? `<div class="vmeta">${esc(h.summary)}</div>` : ""}</div>
         <div class="actions">
           <button class="btn btn-sm" data-srch-detail="${esc(h.name)}">${t("pkg_detail")}</button>
           <button class="btn btn-sm btn-primary" data-srch-install="${esc(h.name)}">${t("btn_install")}</button>
@@ -576,8 +576,9 @@ async function showSearch() {
       }));
     } catch (e) { box.innerHTML = `<div class="empty">${t("err_prefix")}${esc(e)}</div>`; }
   };
-  document.getElementById("srch-go").addEventListener("click", run);
-  document.getElementById("srch-q").addEventListener("keydown", (e) => { if (e.key === "Enter") run(); });
+  document.getElementById("srch-go").addEventListener("click", () => run(false));
+  document.getElementById("srch-ai").addEventListener("click", () => run(true));
+  document.getElementById("srch-q").addEventListener("keydown", (e) => { if (e.key === "Enter") run(false); });
   document.getElementById("srch-q").focus();
 }
 
