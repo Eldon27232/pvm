@@ -22,7 +22,26 @@ fn build_agent() -> ureq::Agent {
 }
 
 /// 探测代理：环境变量优先，回退 Windows 系统代理（WinINET）。返回如 `http://127.0.0.1:7890`。
+/// 探测代理：**默认直连**（适合 TUN 模式，让系统层接管）。
+/// 仅 PVM_PROXY 控制：未设 / "direct" = 直连；"system" = 系统/环境代理；其它 = 自定义代理 URL。
 pub fn detect_proxy() -> Option<String> {
+    match std::env::var("PVM_PROXY") {
+        Ok(v) => {
+            let v = v.trim();
+            if v.is_empty() || v.eq_ignore_ascii_case("direct") {
+                None
+            } else if v.eq_ignore_ascii_case("system") {
+                system_proxy()
+            } else {
+                Some(normalize(v))
+            }
+        }
+        Err(_) => None,
+    }
+}
+
+/// 系统/环境代理（仅在 PVM_PROXY=system 时使用）。
+fn system_proxy() -> Option<String> {
     for k in [
         "HTTPS_PROXY",
         "https_proxy",

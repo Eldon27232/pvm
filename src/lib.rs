@@ -4,6 +4,7 @@
 //! 功能模块（resolve/download/archive/source_pbs/source_pyorg/shim/venv/pip/winpath）
 //! 与命令层（commands/cli）随后逐步填充。
 
+pub mod ai;
 pub mod archive;
 pub mod cli;
 pub mod commands;

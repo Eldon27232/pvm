@@ -4,7 +4,24 @@
 
 mod commands;
 
+/// 启动时若 config 指定了代理模式且进程未设 PVM_PROXY，则注入，供 net::agent 使用。
+fn set_proxy_from_config() {
+    if std::env::var("PVM_PROXY").is_ok() {
+        return;
+    }
+    if let Ok(p) = pvm::paths::Paths::discover(None) {
+        if let Ok(cfg) = pvm::config::Config::load(&p) {
+            if let Some(proxy) = cfg.proxy {
+                if !proxy.trim().is_empty() {
+                    std::env::set_var("PVM_PROXY", proxy);
+                }
+            }
+        }
+    }
+}
+
 fn main() {
+    set_proxy_from_config();
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             commands::root_dir,
@@ -46,6 +63,10 @@ fn main() {
             commands::snapshot_delete,
             commands::snapshot_apply,
             commands::scaffold,
+            commands::set_proxy,
+            commands::get_ai_config,
+            commands::set_ai_config,
+            commands::ai_diagnose,
         ])
         .run(tauri::generate_context!())
         .expect("运行 pvm GUI 失败");

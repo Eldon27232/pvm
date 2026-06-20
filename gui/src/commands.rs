@@ -435,6 +435,7 @@ pub fn mirror_reset() -> Result<(), String> {
 pub struct ConfigInfo {
     default_source: String,
     pip_mirror: Option<String>,
+    proxy: String,
 }
 
 #[tauri::command]
@@ -444,7 +445,83 @@ pub fn get_config() -> Result<ConfigInfo, String> {
     Ok(ConfigInfo {
         default_source: c.default_source_resolved().cli_value().to_string(),
         pip_mirror: c.pip_mirror,
+        proxy: c.proxy.unwrap_or_else(|| "direct".into()),
     })
+}
+
+/// 设置网络代理模式（"direct"/"system"/自定义 URL），写入 config，重启 app 生效。
+#[tauri::command]
+pub fn set_proxy(mode: String) -> Result<(), String> {
+    let p = paths()?;
+    let mut c = Config::load(&p).map_err(|e| e.to_string())?;
+    let mode = mode.trim();
+    c.proxy = Some(if mode.is_empty() { "direct".into() } else { mode.to_string() });
+    c.save(&p).map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+pub struct AiConfigInfo {
+    provider: String,
+    base_url: String,
+    model: String,
+    has_key: bool,
+}
+
+#[tauri::command]
+pub fn get_ai_config() -> Result<AiConfigInfo, String> {
+    let p = paths()?;
+    let c = Config::load(&p).map_err(|e| e.to_string())?;
+    Ok(AiConfigInfo {
+        provider: c.ai_provider.unwrap_or_else(|| "openai".into()),
+        base_url: c.ai_base_url.unwrap_or_default(),
+        model: c.ai_model.unwrap_or_default(),
+        has_key: c.ai_key.map_or(false, |k| !k.trim().is_empty()),
+    })
+}
+
+#[tauri::command]
+pub fn set_ai_config(
+    provider: String,
+    base_url: String,
+    key: String,
+    model: String,
+) -> Result<(), String> {
+    let p = paths()?;
+    let mut c = Config::load(&p).map_err(|e| e.to_string())?;
+    c.ai_provider = Some(provider);
+    c.ai_base_url = if base_url.trim().is_empty() { None } else { Some(base_url) };
+    // 空 key 表示不修改（避免清空已存的 key）
+    if !key.trim().is_empty() {
+        c.ai_key = Some(key);
+    }
+    c.ai_model = if model.trim().is_empty() { None } else { Some(model) };
+    c.save(&p).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn ai_diagnose(error_log: String) -> Result<String, String> {
+    let p = paths()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let c = Config::load(&p).map_err(|e| e.to_string())?;
+        let cfg = pvm::ai::AiConfig {
+            provider: c.ai_provider.unwrap_or_else(|| "openai".into()),
+            base_url: c
+                .ai_base_url
+                .filter(|s| !s.trim().is_empty())
+                .ok_or("未配置 AI Base URL（在设置页填写）")?,
+            key: c
+                .ai_key
+                .filter(|k| !k.trim().is_empty())
+                .ok_or("未配置 AI API Key（在设置页填写）")?,
+            model: c
+                .ai_model
+                .filter(|s| !s.trim().is_empty())
+                .ok_or("未配置 AI 模型（在设置页填写）")?,
+        };
+        pvm::ai::diagnose(&cfg, &error_log).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

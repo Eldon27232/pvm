@@ -351,7 +351,26 @@ function paintPackages(filter) {
 
 async function pkgOp(fn, runningMsg) {
   toast(runningMsg, "");
-  try { await fn(); toast(t("done"), "ok"); lsSet("pkgs:" + state.pkgPy, null); } catch (e) { toast(t("err_prefix") + e, "err"); }
+  try { await fn(); toast(t("done"), "ok"); lsSet("pkgs:" + state.pkgPy, null); } catch (e) { showOpError(String(e)); }
+}
+
+function showOpError(err) {
+  openModal(`
+    <div class="detail-head"><div class="detail-title">${t("op_failed")}</div><button class="icon-btn" id="modal-close">✕</button></div>
+    <pre style="background:var(--bg-elev2);border:1px solid var(--border);border-radius:8px;padding:10px;max-height:30vh;overflow:auto;font-size:12px;white-space:pre-wrap">${esc(err)}</pre>
+    <div class="actions" style="margin-top:12px"><button class="btn btn-primary" id="ai-diag">${t("ai_diagnose")}</button></div>
+    <div id="ai-result" style="margin-top:12px"></div>`);
+  document.getElementById("modal-close").addEventListener("click", closeModal);
+  document.getElementById("ai-diag").addEventListener("click", async () => {
+    const r = document.getElementById("ai-result");
+    r.innerHTML = `<div class="empty"><span class="spin"></span> ${t("ai_thinking")}</div>`;
+    try {
+      const ans = await invoke("ai_diagnose", { errorLog: err });
+      r.innerHTML = `<div class="detail-readme"><pre>${esc(ans)}</pre></div>`;
+    } catch (e) {
+      r.innerHTML = `<div class="empty">${t("err_prefix")}${esc(e)}</div>`;
+    }
+  });
 }
 
 function currentFilter() { const el = document.getElementById("pkgsearch"); return el ? el.value.trim() : ""; }
@@ -879,7 +898,7 @@ async function renderMirror(c) {
 
 // ---------- 面板：设置 ----------
 async function renderSettings(c) {
-  const [cfg, doc] = await Promise.all([call("get_config"), call("doctor")]);
+  const [cfg, doc, ai] = await Promise.all([call("get_config"), call("doctor"), call("get_ai_config")]);
   c.innerHTML = `
     <div class="panel-head"><div class="panel-title">${t("nav_settings")}</div></div>
     <div class="card">
@@ -902,6 +921,39 @@ async function renderSettings(c) {
       <div class="actions" style="margin-top:12px"><button class="btn btn-primary" id="initbtn">${t("btn_init")}</button></div>
     </div>
     <div class="card">
+      <div class="panel-hint">${t("settings_proxy")}</div>
+      <div class="inline">
+        <div class="field" style="min-width:170px"><label>${t("proxy_mode")}</label>
+          <select id="proxymode">
+            <option value="direct" ${cfg.proxy === "direct" ? "selected" : ""}>${t("proxy_direct")}</option>
+            <option value="system" ${cfg.proxy === "system" ? "selected" : ""}>${t("proxy_system")}</option>
+            <option value="custom" ${cfg.proxy !== "direct" && cfg.proxy !== "system" ? "selected" : ""}>${t("proxy_custom")}</option>
+          </select>
+        </div>
+        <div class="field" style="flex:1;min-width:180px"><label>${t("proxy_url")}</label><input type="text" id="proxyurl" placeholder="http://127.0.0.1:7890" value="${cfg.proxy !== "direct" && cfg.proxy !== "system" ? esc(cfg.proxy) : ""}"/></div>
+        <button class="btn btn-primary" id="proxysave" style="align-self:flex-end;margin-bottom:12px">${t("btn_apply")}</button>
+      </div>
+      <div class="muted">${t("proxy_hint")}</div>
+    </div>
+    <div class="card">
+      <div class="panel-hint">${t("settings_ai")}</div>
+      <div class="inline">
+        <div class="field" style="min-width:150px"><label>${t("ai_provider")}</label>
+          <select id="aiprovider">
+            <option value="openai" ${ai.provider === "openai" ? "selected" : ""}>OpenAI 格式</option>
+            <option value="anthropic" ${ai.provider === "anthropic" ? "selected" : ""}>Anthropic 格式</option>
+          </select>
+        </div>
+        <div class="field" style="flex:1;min-width:200px"><label>${t("ai_base_url")}</label><input type="text" id="aibaseurl" placeholder="https://api.openai.com/v1" value="${esc(ai.base_url)}"/></div>
+      </div>
+      <div class="inline">
+        <div class="field" style="flex:1;min-width:180px"><label>${t("ai_key")}</label><input type="password" id="aikey" placeholder="${ai.has_key ? t("ai_key_set") : "sk-..."}"/></div>
+        <div class="field" style="min-width:160px"><label>${t("ai_model")}</label><input type="text" id="aimodel" placeholder="gpt-4o-mini / claude-3-5-sonnet" value="${esc(ai.model)}"/></div>
+        <button class="btn btn-primary" id="aisave" style="align-self:flex-end;margin-bottom:12px">${t("btn_apply")}</button>
+      </div>
+      <div class="muted">${t("ai_hint")}</div>
+    </div>
+    <div class="card">
       <div class="panel-hint">${t("settings_about")}</div>
       <div class="muted">${t("about_text")}</div>
       <div class="actions" style="margin-top:10px"><button class="btn" id="gh-btn">${t("github_repo")}</button></div>
@@ -917,6 +969,22 @@ async function renderSettings(c) {
     render();
   });
   document.getElementById("gh-btn").addEventListener("click", () => openExt(REPO_URL));
+  document.getElementById("proxysave").addEventListener("click", async () => {
+    const m = document.getElementById("proxymode").value;
+    const url = document.getElementById("proxyurl").value.trim();
+    const mode = m === "custom" ? (url || "direct") : m;
+    await call("set_proxy", { mode });
+    toast(t("proxy_saved"), "ok");
+  });
+  document.getElementById("aisave").addEventListener("click", async () => {
+    const provider = document.getElementById("aiprovider").value;
+    const baseUrl = document.getElementById("aibaseurl").value.trim();
+    const key = document.getElementById("aikey").value;
+    const model = document.getElementById("aimodel").value.trim();
+    await call("set_ai_config", { provider, baseUrl, key, model });
+    toast(t("done"), "ok");
+    render();
+  });
 }
 
 // ---------- 启动 ----------

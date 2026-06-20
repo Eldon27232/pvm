@@ -13,6 +13,13 @@ pub struct Config {
     /// 关闭 shim 的 .python-version 自动切换（保留供高级用户）。
     #[serde(default)]
     pub disable_auto_switch: bool,
+    /// 网络代理模式："direct"（默认，适合 TUN）| "system" | 自定义代理 URL。
+    pub proxy: Option<String>,
+    /// AI 诊断配置（OpenAI 兼容 或 Anthropic 格式）。
+    pub ai_provider: Option<String>,
+    pub ai_base_url: Option<String>,
+    pub ai_key: Option<String>,
+    pub ai_model: Option<String>,
 }
 
 impl Config {
