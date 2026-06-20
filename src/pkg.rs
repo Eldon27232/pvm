@@ -394,6 +394,73 @@ pub fn install_requirements(py: &Path, req_file: &Path, mirror_url: Option<&str>
     run_capture(c, "pip install -r")
 }
 
+/// 流式安装/升级：pip 输出逐行回调（on_line），返回是否成功（供实时日志）。
+pub fn install_stream(
+    py: &Path,
+    spec: &str,
+    mirror_url: Option<&str>,
+    upgrade: bool,
+    on_line: &(dyn Fn(&str) + Send + Sync),
+) -> Result<bool> {
+    let mut c = pip(py);
+    c.arg("install").arg("--no-input");
+    if upgrade {
+        c.arg("--upgrade");
+    }
+    if let Some(m) = mirror_url {
+        c.arg("-i").arg(m);
+    }
+    c.arg(spec);
+    stream_cmd(c, on_line)
+}
+
+pub fn uninstall_stream(
+    py: &Path,
+    name: &str,
+    on_line: &(dyn Fn(&str) + Send + Sync),
+) -> Result<bool> {
+    let mut c = pip(py);
+    c.args(["uninstall", "-y", name]);
+    stream_cmd(c, on_line)
+}
+
+fn stream_cmd(mut c: Command, on_line: &(dyn Fn(&str) + Send + Sync)) -> Result<bool> {
+    use std::io::BufRead;
+    c.stdout(std::process::Stdio::piped());
+    c.stderr(std::process::Stdio::piped());
+    let mut child = c
+        .spawn()
+        .map_err(|e| PvmError::Config(format!("启动 pip 失败: {e}")))?;
+    let out = child.stdout.take();
+    let err = child.stderr.take();
+    std::thread::scope(|s| {
+        if let Some(out) = out {
+            s.spawn(|| {
+                for line in std::io::BufReader::new(out)
+                    .lines()
+                    .map_while(std::result::Result::ok)
+                {
+                    on_line(&line);
+                }
+            });
+        }
+        if let Some(err) = err {
+            s.spawn(|| {
+                for line in std::io::BufReader::new(err)
+                    .lines()
+                    .map_while(std::result::Result::ok)
+                {
+                    on_line(&line);
+                }
+            });
+        }
+    });
+    let status = child
+        .wait()
+        .map_err(|e| PvmError::Config(format!("等待 pip 失败: {e}")))?;
+    Ok(status.success())
+}
+
 fn run_capture(mut c: Command, label: &str) -> Result<String> {
     let out = c
         .output()

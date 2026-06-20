@@ -16,6 +16,7 @@ pub mod pip;
 pub mod pkg;
 pub mod resolve;
 pub mod shim;
+pub mod snapshot;
 pub mod source_pbs;
 pub mod source_pyorg;
 pub mod system;

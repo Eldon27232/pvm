@@ -40,6 +40,12 @@ fn main() {
             commands::open_url,
             commands::pkg_search,
             commands::pkg_dry_run,
+            commands::pkg_batch,
+            commands::snapshot_save,
+            commands::snapshot_list,
+            commands::snapshot_delete,
+            commands::snapshot_apply,
+            commands::scaffold,
         ])
         .run(tauri::generate_context!())
         .expect("运行 pvm GUI 失败");

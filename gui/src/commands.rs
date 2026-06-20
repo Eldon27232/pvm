@@ -735,3 +735,121 @@ pub async fn pkg_dry_run(
     .await
     .map_err(|e| e.to_string())?
 }
+
+/// 批量操作（install/upgrade/uninstall），后台线程顺序执行，pip 输出流式 emit 到前端。
+#[tauri::command]
+pub fn pkg_batch(
+    app: AppHandle,
+    py_exe: String,
+    action: String,
+    names: Vec<String>,
+    mirror: Option<String>,
+) -> Result<(), String> {
+    let url = resolve_mirror_url(mirror);
+    std::thread::spawn(move || {
+        let py = PathBuf::from(&py_exe);
+        let app_line = app.clone();
+        let on_line = move |line: &str| {
+            let _ = app_line.emit("batch://line", line.to_string());
+        };
+        let total = names.len();
+        for (i, name) in names.iter().enumerate() {
+            let _ = app.emit(
+                "batch://item",
+                serde_json::json!({ "index": i + 1, "total": total, "name": name, "action": action }),
+            );
+            let r = match action.as_str() {
+                "uninstall" => pvm::pkg::uninstall_stream(&py, name, &on_line),
+                "upgrade" => pvm::pkg::install_stream(&py, name, url.as_deref(), true, &on_line),
+                _ => pvm::pkg::install_stream(&py, name, url.as_deref(), false, &on_line),
+            };
+            let ok = r.unwrap_or(false);
+            let _ = app.emit(
+                "batch://item-done",
+                serde_json::json!({ "name": name, "success": ok }),
+            );
+        }
+        let _ = app.emit("batch://done", serde_json::json!({ "total": total }));
+    });
+    Ok(())
+}
+
+// ---------- 环境快照 / 克隆 / 项目脚手架 ----------
+
+#[tauri::command]
+pub async fn snapshot_save(py_exe: String, name: String, py_label: String) -> Result<(), String> {
+    let p = paths()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        pvm::snapshot::save(
+            std::path::Path::new(&py_exe),
+            &name,
+            &py_label,
+            &p.root.join("snapshots"),
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn snapshot_list() -> Result<Vec<pvm::snapshot::Snapshot>, String> {
+    let p = paths()?;
+    Ok(pvm::snapshot::list(&p.root.join("snapshots")))
+}
+
+#[tauri::command]
+pub fn snapshot_delete(name: String) -> Result<(), String> {
+    let p = paths()?;
+    pvm::snapshot::delete(&p.root.join("snapshots"), &name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn snapshot_apply(
+    py_exe: String,
+    name: String,
+    mirror: Option<String>,
+) -> Result<String, String> {
+    let p = paths()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let snap =
+            pvm::snapshot::load(&p.root.join("snapshots"), &name).map_err(|e| e.to_string())?;
+        let url = resolve_mirror_url(mirror);
+        pvm::snapshot::apply(std::path::Path::new(&py_exe), &snap, url.as_deref(), &p.cache())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 项目脚手架：在目录写 .python-version + 建 .venv（基于指定版本）。
+#[tauri::command]
+pub fn scaffold(dir: String, canonical: String, mirror: Option<String>) -> Result<String, String> {
+    let p = paths()?;
+    let target = PathBuf::from(&dir);
+    if !target.is_dir() {
+        return Err(format!("目录不存在: {dir}"));
+    }
+    let v = PythonVersion::parse_canonical(&canonical).map_err(|e| e.to_string())?;
+    if !resolve::is_installed(&v, &p) {
+        return Err(format!("未安装: {canonical}"));
+    }
+    std::fs::write(target.join(".python-version"), v.canonical()).map_err(|e| e.to_string())?;
+    let venv_path = target.join(".venv");
+    let opts = VenvCreateOpts {
+        name: "project",
+        py_selector: Some(&canonical),
+        in_project: false,
+        path: Some(&venv_path),
+        clear: false,
+        without_pip: false,
+        system_site_packages: false,
+        mirror: mirror.as_deref(),
+    };
+    let created = venv::venv_create(&opts, &p).map_err(|e| e.to_string())?;
+    Ok(format!(
+        "已创建项目环境：\n.python-version → {}\n.venv → {}",
+        v.canonical(),
+        created.display()
+    ))
+}

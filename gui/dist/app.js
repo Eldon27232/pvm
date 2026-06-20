@@ -18,6 +18,7 @@ const state = {
   pkgOutdated: {},
   pkgCacheByPy: {},
   interpCache: null,
+  pkgSelected: new Set(),
 };
 // 安装进度状态：id -> {downloaded,total,stage,done,success,error}
 const progress = {};
@@ -219,6 +220,14 @@ async function renderPackages(c) {
       </div>
     </div>
     <div class="searchbar"><input type="text" id="pkgsearch" placeholder="${t("pkg_search")}"/></div>
+    <div class="card" id="pkg-toolbar" style="display:none;padding:10px 14px">
+      <div class="inline" style="align-items:center">
+        <span id="sel-count" class="muted"></span>
+        <button class="btn btn-sm btn-primary" id="batch-upgrade">${t("batch_upgrade")}</button>
+        <button class="btn btn-sm btn-danger" id="batch-uninstall">${t("batch_uninstall")}</button>
+        <button class="btn btn-sm" id="sel-clear">${t("batch_clear")}</button>
+      </div>
+    </div>
     <div class="list-scroll" id="pkglist"><div class="empty"><span class="spin"></span> ${t("loading")}</div></div>`;
 
   const py = () => state.pkgPy;
@@ -263,6 +272,9 @@ async function renderPackages(c) {
     await pkgOp(() => invoke("pkg_install_requirements", { pyExe: py(), reqFile: f, mirror: mirror() }), t("pkg_importing"));
     loadPackages();
   });
+  document.getElementById("batch-upgrade").addEventListener("click", () => runBatch("upgrade"));
+  document.getElementById("batch-uninstall").addEventListener("click", () => runBatch("uninstall"));
+  document.getElementById("sel-clear").addEventListener("click", () => { state.pkgSelected = new Set(); paintPackages(currentFilter()); });
 
   loadPackages();
 }
@@ -294,6 +306,7 @@ function paintPackages(filter) {
       const latest = state.pkgOutdated[p.name.toLowerCase()];
       return `
       <div class="row">
+        <input type="checkbox" class="pkgsel" data-sel="${esc(p.name)}" ${state.pkgSelected.has(p.name) ? "checked" : ""} style="margin-right:4px"/>
         <div class="grow">
           <div class="vname">${esc(p.name)} <span class="muted">${esc(p.version)}</span>
             ${latest ? `<span class="badge badge-ft">↑ ${esc(latest)}</span>` : ""}
@@ -326,6 +339,14 @@ function paintPackages(filter) {
   box.querySelectorAll("[data-pkgshow]").forEach((b) =>
     b.addEventListener("click", () => showDetail(b.dataset.pkgshow))
   );
+  box.querySelectorAll(".pkgsel").forEach((cb) =>
+    cb.addEventListener("change", () => {
+      if (cb.checked) state.pkgSelected.add(cb.dataset.sel);
+      else state.pkgSelected.delete(cb.dataset.sel);
+      updateToolbar();
+    })
+  );
+  updateToolbar();
 }
 
 async function pkgOp(fn, runningMsg) {
@@ -486,6 +507,55 @@ async function showDryRun(spec) {
   }
 }
 
+// ---------- 批量操作 + 流式日志 ----------
+function updateToolbar() {
+  const tb = document.getElementById("pkg-toolbar");
+  if (!tb) return;
+  const n = state.pkgSelected.size;
+  tb.style.display = n ? "" : "none";
+  const c = document.getElementById("sel-count");
+  if (c) c.textContent = t("batch_selected", { n });
+}
+
+async function runBatch(action) {
+  const names = Array.from(state.pkgSelected);
+  if (!names.length) return;
+  if (action === "uninstall" && !confirm(t("batch_confirm_rm", { n: names.length }))) return;
+  showBatchLog(action, names);
+  try {
+    await invoke("pkg_batch", { pyExe: state.pkgPy, action, names, mirror: curMirror() });
+  } catch (e) {
+    toast(t("err_prefix") + e, "err");
+  }
+}
+
+function showBatchLog(action, names) {
+  openModal(`
+    <div class="detail-head"><div class="detail-title">${t("batch_running")} · ${esc(action)} (${names.length})</div><button class="icon-btn" id="modal-close">✕</button></div>
+    <div class="muted" id="batch-status"></div>
+    <pre id="batch-log" style="background:var(--bg-elev2);border:1px solid var(--border);border-radius:8px;padding:10px;max-height:52vh;overflow:auto;font-size:12px;line-height:1.5;white-space:pre-wrap;margin-top:8px"></pre>`);
+  document.getElementById("modal-close").addEventListener("click", closeModal);
+}
+
+function wireBatchEvents() {
+  const appendLog = (s) => { const l = document.getElementById("batch-log"); if (l) { l.textContent += s; l.scrollTop = l.scrollHeight; } };
+  listen("batch://line", (e) => appendLog(e.payload + "\n"));
+  listen("batch://item", (e) => {
+    const p = e.payload;
+    const st = document.getElementById("batch-status");
+    if (st) st.textContent = `[${p.index}/${p.total}] ${p.action} ${p.name}`;
+    appendLog(`\n=== [${p.index}/${p.total}] ${p.action} ${p.name} ===\n`);
+  });
+  listen("batch://item-done", (e) => appendLog((e.payload.success ? "✓ " : "✕ ") + e.payload.name + "\n"));
+  listen("batch://done", () => {
+    const st = document.getElementById("batch-status");
+    if (st) st.textContent = t("batch_done");
+    state.pkgSelected = new Set();
+    lsSet("pkgs:" + state.pkgPy, null);
+    if (state.nav === "packages") loadPackages();
+  });
+}
+
 // ---------- 面板：安装新版本 ----------
 async function renderInstall(c) {
   c.innerHTML = `
@@ -642,10 +712,22 @@ function wireInstallEvents() {
 
 // ---------- 面板：虚拟环境 ----------
 async function renderVenv(c) {
-  const [venvs, installed] = await Promise.all([call("venv_list"), call("list_installed")]);
+  const [venvs, installed, snapshots] = await Promise.all([call("venv_list"), call("list_installed"), call("snapshot_list")]);
   const mirrors = await call("mirror_list");
+  let interps = lsGet("interps");
+  if (!interps) interps = await call("list_interpreters");
   const opts = installed.map((v) => `<option value="${esc(v.id)}">${esc(v.version)} (${esc(v.source)})</option>`).join("");
+  const iopts = interps.map((i) => `<option value="${esc(i.py_exe)}|${esc(i.label)}">${esc(i.label)}</option>`).join("");
   const mopts = `<option value="">—</option>` + mirrors.map((m) => `<option value="${esc(m.alias)}">${esc(m.display)}</option>`).join("");
+  const snapRows = snapshots.length
+    ? snapshots.map((s) => `
+      <div class="row"><div class="grow"><div class="vname">${esc(s.name)} <span class="muted">${s.packages.length} 包</span></div><div class="vmeta">${esc(s.py_label)} · ${esc(String(s.created_at).slice(0,19).replace("T"," "))}</div></div>
+      <div class="actions">
+        <select class="snap-target" data-snap="${esc(s.name)}" style="max-width:150px">${iopts}</select>
+        <button class="btn btn-sm btn-primary" data-snapapply="${esc(s.name)}">${t("snap_clone")}</button>
+        <button class="btn btn-sm btn-danger" data-snaprm="${esc(s.name)}">${t("btn_remove")}</button>
+      </div></div>`).join("")
+    : `<div class="empty">${t("snap_empty")}</div>`;
   const rows = venvs.length
     ? venvs
         .map(
@@ -674,6 +756,25 @@ async function renderVenv(c) {
         <button class="btn btn-primary" id="vcreate" style="align-self:flex-end;margin-bottom:12px">${t("btn_create")}</button>
       </div>
     </div>
+    <div class="card">
+      <div class="panel-hint">${t("scaffold_title")}</div>
+      <div class="inline">
+        <div class="field" style="flex:1;min-width:200px"><label>${t("scaffold_dir")}</label><input type="text" id="scdir" placeholder="C:\\path\\to\\project"/></div>
+        <div class="field" style="min-width:150px"><label>${t("venv_pyver")}</label><select id="scpy">${opts || `<option value="">—</option>`}</select></div>
+        <div class="field" style="min-width:120px"><label>${t("venv_mirror")}</label><select id="scmirror">${mopts}</select></div>
+        <button class="btn btn-primary" id="scgo" style="align-self:flex-end;margin-bottom:12px">${t("scaffold_btn")}</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="panel-hint">${t("snap_title")}</div>
+      <div class="inline">
+        <div class="field" style="min-width:200px"><label>${t("snap_source")}</label><select id="snappy">${iopts}</select></div>
+        <div class="field" style="flex:1;min-width:140px"><label>${t("snap_name")}</label><input type="text" id="snapname" placeholder="my-env"/></div>
+        <button class="btn btn-primary" id="snapsave" style="align-self:flex-end;margin-bottom:12px">${t("snap_save")}</button>
+      </div>
+      <div class="list-scroll" style="max-height:30vh;margin-top:8px">${snapRows}</div>
+    </div>
+    <div class="panel-head" style="margin-top:12px"><div class="panel-title" style="font-size:16px">${t("venv_list_title")}</div></div>
     <div class="list-scroll">${rows}</div>`;
 
   document.getElementById("vcreate").addEventListener("click", async () => {
@@ -697,6 +798,40 @@ async function renderVenv(c) {
     b.addEventListener("click", () => {
       navigator.clipboard.writeText(`& '${b.dataset.copy}\\Scripts\\Activate.ps1'`);
       toast(t("copied"), "ok");
+    })
+  );
+  document.getElementById("scgo").addEventListener("click", async () => {
+    const dir = document.getElementById("scdir").value.trim();
+    const canonical = document.getElementById("scpy").value;
+    const mirror = document.getElementById("scmirror").value || null;
+    if (!dir || !canonical) { toast(t("err_prefix") + t("scaffold_dir"), "err"); return; }
+    toast(t("scaffold_running"), "");
+    try { const msg = await invoke("scaffold", { dir, canonical, mirror }); toast(msg, "ok"); render(); } catch (e) { toast(t("err_prefix") + e, "err"); }
+  });
+  document.getElementById("snapsave").addEventListener("click", async () => {
+    const val = document.getElementById("snappy").value;
+    const name = document.getElementById("snapname").value.trim();
+    if (!name) { toast(t("err_prefix") + t("snap_name"), "err"); return; }
+    const [pyExe, label] = val.split("|");
+    toast(t("snap_saving"), "");
+    try { await invoke("snapshot_save", { pyExe, name, pyLabel: label || "" }); toast(t("done"), "ok"); render(); } catch (e) { toast(t("err_prefix") + e, "err"); }
+  });
+  c.querySelectorAll("[data-snapapply]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const sel = c.querySelector(`.snap-target[data-snap="${CSS.escape(b.dataset.snapapply)}"]`);
+      const val = sel ? sel.value : "";
+      const pyExe = val.split("|")[0];
+      if (!pyExe) return;
+      toast(t("snap_cloning"), "");
+      try { await invoke("snapshot_apply", { pyExe, name: b.dataset.snapapply, mirror: null }); toast(t("done"), "ok"); } catch (e) { toast(t("err_prefix") + e, "err"); }
+    })
+  );
+  c.querySelectorAll("[data-snaprm]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      if (!confirm(t("snap_confirm_rm", { name: b.dataset.snaprm }))) return;
+      await call("snapshot_delete", { name: b.dataset.snaprm });
+      toast(t("done"), "ok");
+      render();
     })
   );
 }
@@ -789,6 +924,7 @@ function init() {
   applyTheme();
   applyStatic();
   wireInstallEvents();
+  wireBatchEvents();
   refreshCurrent();
   render();
 
