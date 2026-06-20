@@ -1,6 +1,9 @@
 // pvm GUI 前端逻辑。通过 window.__TAURI__ 调用 Rust 命令并监听安装进度事件。
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
+const REPO_URL = "https://github.com/Eldon27232/pvm";
+function lsGet(key) { try { return JSON.parse(localStorage.getItem(key)); } catch (_) { return null; } }
+function lsSet(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch (_) {} }
 
 const state = {
   lang: localStorage.getItem("pvm_lang") || "zh",
@@ -171,16 +174,24 @@ async function renderInstalled(c) {
 let pkgCache = [];
 
 async function renderPackages(c) {
-  const [interps, mirrors] = await Promise.all([
-    state.interpCache || call("list_interpreters"),
-    call("mirror_list"),
-  ]);
+  const mirrors = await call("mirror_list");
+  let interps = state.interpCache || lsGet("interps");
+  if (!interps) {
+    interps = await call("list_interpreters");
+    lsSet("interps", interps);
+  } else {
+    // 有缓存先用，后台刷新
+    invoke("list_interpreters").then((fresh) => { lsSet("interps", fresh); state.interpCache = fresh; }).catch(() => {});
+  }
   state.interpCache = interps;
   if (!interps.length) {
     c.innerHTML = `<div class="panel-head"><div class="panel-title">${t("nav_packages")}</div></div><div class="empty">${t("pkg_no_interp")}</div>`;
     return;
   }
-  if (!state.pkgPy || !interps.some((i) => i.py_exe === state.pkgPy)) state.pkgPy = interps[0].py_exe;
+  if (!state.pkgPy || !interps.some((i) => i.py_exe === state.pkgPy)) {
+    const last = lsGet("lastPy");
+    state.pkgPy = last && interps.some((i) => i.py_exe === last) ? last : interps[0].py_exe;
+  }
   const iopts = interps
     .map((i) => `<option value="${esc(i.py_exe)}" ${i.py_exe === state.pkgPy ? "selected" : ""}>${esc(i.label)}</option>`)
     .join("");
@@ -211,8 +222,8 @@ async function renderPackages(c) {
   const py = () => state.pkgPy;
   const mirror = () => { const el = document.getElementById("pkgmirror"); return el ? el.value || null : null; };
 
-  document.getElementById("pkgpy").addEventListener("change", (e) => { state.pkgPy = e.target.value; state.pkgOutdated = {}; loadPackages(); });
-  document.getElementById("pkgrefresh").addEventListener("click", () => { state.pkgCacheByPy[state.pkgPy] = null; state.pkgOutdated = {}; loadPackages(); });
+  document.getElementById("pkgpy").addEventListener("change", (e) => { state.pkgPy = e.target.value; lsSet("lastPy", state.pkgPy); state.pkgOutdated = {}; loadPackages(); });
+  document.getElementById("pkgrefresh").addEventListener("click", () => { lsSet("pkgs:" + state.pkgPy, null); state.pkgOutdated = {}; loadPackages(); });
   document.getElementById("pkgterm").addEventListener("click", async () => { try { await invoke("open_terminal", { pyExe: state.pkgPy }); } catch (e) { toast(t("err_prefix") + e, "err"); } });
   document.getElementById("pkgsearch").addEventListener("input", (e) => paintPackages(e.target.value.trim()));
   document.getElementById("pkginstall").addEventListener("click", async () => {
@@ -251,12 +262,13 @@ async function renderPackages(c) {
 
 async function loadPackages() {
   const box = document.getElementById("pkglist");
-  const cached = state.pkgCacheByPy[state.pkgPy];
+  const key = "pkgs:" + state.pkgPy;
+  const cached = lsGet(key);
   if (cached) { pkgCache = cached; paintPackages(currentFilter()); }
   else if (box) box.innerHTML = skeletonRows();
   try {
     const fresh = await invoke("pkg_list", { pyExe: state.pkgPy });
-    state.pkgCacheByPy[state.pkgPy] = fresh;
+    lsSet(key, fresh);
     pkgCache = fresh;
     paintPackages(currentFilter());
   } catch (e) {
@@ -311,7 +323,7 @@ function paintPackages(filter) {
 
 async function pkgOp(fn, runningMsg) {
   toast(runningMsg, "");
-  try { await fn(); toast(t("done"), "ok"); } catch (e) { toast(t("err_prefix") + e, "err"); }
+  try { await fn(); toast(t("done"), "ok"); lsSet("pkgs:" + state.pkgPy, null); } catch (e) { toast(t("err_prefix") + e, "err"); }
 }
 
 function currentFilter() { const el = document.getElementById("pkgsearch"); return el ? el.value.trim() : ""; }
@@ -320,57 +332,75 @@ function skeletonRows() {
   return Array.from({ length: 9 }).map(() => `<div class="row skeleton"><div class="grow"><div class="sk-line"></div></div></div>`).join("");
 }
 
-// ---------- 富详情模态 ----------
+// ---------- 富详情模态（本地秒出 + PyPI 异步补充）----------
 async function showDetail(name) {
   openModal(`<div class="empty"><span class="spin"></span> ${t("loading")}</div>`);
+  let local;
   try {
-    const d = await invoke("pkg_detail", { pyExe: state.pkgPy, name });
-    renderDetail(d);
+    local = await invoke("pkg_detail", { pyExe: state.pkgPy, name });
   } catch (e) {
     openModal(`<div class="detail-head"><div class="detail-title">${esc(name)}</div><button class="icon-btn" id="modal-close">✕</button></div><div class="empty">${t("err_prefix")}${esc(e)}</div>`);
     const cb = document.getElementById("modal-close"); if (cb) cb.addEventListener("click", closeModal);
+    return;
   }
+  renderDetail(local, null); // 本地秒出
+  invoke("pkg_pypi", { name }).then((pypi) => {
+    const m = document.getElementById("modal");
+    if (m && m.style.display !== "none") renderDetail(local, pypi); // 补 PyPI（可用版本/README/链接）
+  }).catch(() => {});
 }
 
-function renderDetail(d) {
+function renderDetail(d, pypi) {
+  const summary = d.summary || (pypi && pypi.summary) || "";
+  const author = d.author || (pypi && pypi.author) || "";
+  const license = d.license || (pypi && pypi.license) || "";
   const links = [];
   if (d.home_page) links.push([t("dt_home"), d.home_page]);
-  (d.project_urls || []).forEach(([k, u]) => links.push([k, u]));
+  else if (pypi && pypi.home_page) links.push([t("dt_home"), pypi.home_page]);
+  if (pypi) (pypi.project_urls || []).forEach(([k, u]) => links.push([k, u]));
   const linkHtml = links.map(([k, u]) => `<a class="lnk" data-url="${esc(u)}">${esc(k)}</a>`).join(" · ");
-  const verOpts = (d.available_versions || []).slice(0, 400).map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
   const chips = (arr) => (arr && arr.length) ? arr.map((x) => `<span class="badge dep" data-dep="${esc(x)}">${esc(x)}</span>`).join(" ") : `<span class="muted">${t("none")}</span>`;
+  let verBlock;
+  if (pypi) {
+    const verOpts = (pypi.available_versions || []).slice(0, 400).map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
+    verBlock = `<div class="inline" style="margin:12px 0">
+        <div class="field" style="min-width:160px"><label>${t("dt_versions")}</label><select id="dt-ver">${verOpts || `<option>—</option>`}</select></div>
+        <button class="btn btn-primary" id="dt-install" style="align-self:flex-end;margin-bottom:12px">${t("dt_install_ver")}</button>
+        <button class="btn" id="dt-copy" style="align-self:flex-end;margin-bottom:12px">${t("dt_copy_install")}</button>
+      </div>`;
+  } else {
+    verBlock = `<div class="muted" style="margin:12px 0"><span class="spin"></span> ${t("dt_loading_pypi")}</div>`;
+  }
+  const readme = pypi ? pypi.readme : "";
   openModal(`
     <div class="detail-head">
       <div>
         <div class="detail-title">${esc(d.name)} <span class="muted">${esc(d.version)}</span></div>
-        <div class="muted">${esc(d.summary || "")}</div>
+        <div class="muted">${esc(summary)}</div>
       </div>
       <button class="icon-btn" id="modal-close">✕</button>
     </div>
     <div class="detail-body">
-      <div class="kv"><span class="k">${t("dt_author")}</span><span>${esc(d.author || t("none"))}</span></div>
-      <div class="kv"><span class="k">${t("dt_license")}</span><span>${esc(d.license || t("none"))}</span></div>
+      <div class="kv"><span class="k">${t("dt_author")}</span><span>${esc(author || t("none"))}</span></div>
+      <div class="kv"><span class="k">${t("dt_license")}</span><span>${esc(license || t("none"))}</span></div>
       <div class="kv"><span class="k">${t("dt_location")}</span><span>${esc(d.location || t("none"))}</span></div>
       ${linkHtml ? `<div class="kv"><span class="k">${t("dt_links")}</span><span>${linkHtml}</span></div>` : ""}
       <div class="kv"><span class="k">Requires</span><span>${chips(d.requires)}</span></div>
       <div class="kv"><span class="k">Required-by</span><span>${chips(d.required_by)}</span></div>
-      <div class="inline" style="margin:12px 0">
-        <div class="field" style="min-width:160px"><label>${t("dt_versions")}</label><select id="dt-ver">${verOpts || `<option>—</option>`}</select></div>
-        <button class="btn btn-primary" id="dt-install" style="align-self:flex-end;margin-bottom:12px">${t("dt_install_ver")}</button>
-        <button class="btn" id="dt-copy" style="align-self:flex-end;margin-bottom:12px">${t("dt_copy_install")}</button>
-      </div>
-      ${d.readme ? `<div class="detail-readme"><div class="k">${t("dt_readme")}</div><pre>${esc(d.readme.slice(0, 8000))}</pre></div>` : ""}
+      ${verBlock}
+      ${readme ? `<div class="detail-readme"><div class="k">${t("dt_readme")}</div><pre>${esc(readme.slice(0, 8000))}</pre></div>` : ""}
     </div>`);
   document.getElementById("modal-close").addEventListener("click", closeModal);
-  document.getElementById("dt-install").addEventListener("click", async () => {
+  const di = document.getElementById("dt-install");
+  if (di) di.addEventListener("click", async () => {
     const v = document.getElementById("dt-ver").value;
     if (!v) return;
     closeModal();
     await pkgOp(() => invoke("pkg_install", { pyExe: state.pkgPy, spec: `${d.name}==${v}`, mirror: curMirror(), upgrade: true }), t("pkg_installing", { spec: `${d.name}==${v}` }));
-    state.pkgCacheByPy[state.pkgPy] = null;
     loadPackages();
   });
-  document.getElementById("dt-copy").addEventListener("click", () => { navigator.clipboard.writeText(`pip install ${d.name}`); toast(t("copied"), "ok"); });
+  const dc = document.getElementById("dt-copy");
+  if (dc) dc.addEventListener("click", () => { navigator.clipboard.writeText(`pip install ${d.name}`); toast(t("copied"), "ok"); });
   document.querySelectorAll("#modal .lnk").forEach((a) => a.addEventListener("click", () => openExt(a.dataset.url)));
   document.querySelectorAll("#modal .dep").forEach((s) => s.addEventListener("click", () => showDetail(s.dataset.dep)));
 }
@@ -672,6 +702,7 @@ async function renderSettings(c) {
     <div class="card">
       <div class="panel-hint">${t("settings_about")}</div>
       <div class="muted">${t("about_text")}</div>
+      <div class="actions" style="margin-top:10px"><button class="btn" id="gh-btn">${t("github_repo")}</button></div>
     </div>`;
 
   document.getElementById("defsrc").addEventListener("change", async (e) => {
@@ -683,6 +714,7 @@ async function renderSettings(c) {
     toast(msg, "ok");
     render();
   });
+  document.getElementById("gh-btn").addEventListener("click", () => openExt(REPO_URL));
 }
 
 // ---------- 启动 ----------
@@ -710,5 +742,22 @@ function init() {
     state.nav = b.dataset.nav;
     render();
   });
+  const ghTop = document.getElementById("gh-top");
+  if (ghTop) ghTop.addEventListener("click", () => openExt(REPO_URL));
+  prewarm();
 }
+
+// 启动预热：后台预跑解释器列表与默认解释器包列表，填 localStorage 缓存，进面板即秒开。
+function prewarm() {
+  invoke("list_interpreters").then((interps) => {
+    lsSet("interps", interps);
+    state.interpCache = interps;
+    if (interps.length) {
+      const last = lsGet("lastPy");
+      const py = last && interps.some((i) => i.py_exe === last) ? last : interps[0].py_exe;
+      invoke("pkg_list", { pyExe: py }).then((pkgs) => lsSet("pkgs:" + py, pkgs)).catch(() => {});
+    }
+  }).catch(() => {});
+}
+
 init();

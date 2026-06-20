@@ -32,10 +32,10 @@ fn main() {
             commands::pkg_outdated,
             commands::pkg_install,
             commands::pkg_uninstall,
-            commands::pkg_show,
             commands::pkg_freeze,
             commands::pkg_install_requirements,
             commands::pkg_detail,
+            commands::pkg_pypi,
             commands::open_terminal,
             commands::open_url,
         ])

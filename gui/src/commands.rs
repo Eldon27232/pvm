@@ -545,7 +545,13 @@ pub struct Interpreter {
 
 /// 汇总所有可管理的解释器：pvm 安装的 + 虚拟环境 + 系统已装。
 #[tauri::command]
-pub fn list_interpreters() -> Result<Vec<Interpreter>, String> {
+pub async fn list_interpreters() -> Result<Vec<Interpreter>, String> {
+    tauri::async_runtime::spawn_blocking(list_interpreters_blocking)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn list_interpreters_blocking() -> Result<Vec<Interpreter>, String> {
     let p = paths()?;
     let mut out = Vec::new();
     for v in resolve::list_installed(&p).unwrap_or_default() {
@@ -623,15 +629,6 @@ pub async fn pkg_uninstall(py_exe: String, name: String) -> Result<String, Strin
 }
 
 #[tauri::command]
-pub async fn pkg_show(py_exe: String, name: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        pvm::pkg::show(std::path::Path::new(&py_exe), &name).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
 pub async fn pkg_freeze(py_exe: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         pvm::pkg::freeze(std::path::Path::new(&py_exe)).map_err(|e| e.to_string())
@@ -659,13 +656,22 @@ pub async fn pkg_install_requirements(
     .map_err(|e| e.to_string())?
 }
 
+/// 本地详情：纯 Rust 读 METADATA，秒出（不启动 python、不联网）。
 #[tauri::command]
 pub async fn pkg_detail(py_exe: String, name: String) -> Result<pvm::pkg::PkgDetail, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        pvm::pkg::package_detail(std::path::Path::new(&py_exe), &name).map_err(|e| e.to_string())
+        pvm::pkg::local_detail(std::path::Path::new(&py_exe), &name).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// PyPI 元数据：可用版本 / README / 链接，详情面板异步补充（网络）。
+#[tauri::command]
+pub async fn pkg_pypi(name: String) -> Result<pvm::pkg::PypiInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || pvm::pkg::pypi_info(&name).map_err(|e| e.to_string()))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// 打开一个新 PowerShell 窗口，把选定解释器目录前置到本会话 PATH（python/pip 即指向它）。
