@@ -95,7 +95,7 @@ function render() {
 
 // ---------- 面板：已安装 ----------
 async function renderInstalled(c) {
-  const list = await call("list_installed");
+  const [list, sys] = await Promise.all([call("list_installed"), call("list_system_pythons")]);
   state.installed = list;
   let rows = list
     .map(
@@ -117,9 +117,25 @@ async function renderInstalled(c) {
     )
     .join("");
   if (!list.length) rows = `<div class="empty">${t("installed_empty")}</div>`;
+  const sysRows = sys.length
+    ? sys
+        .map(
+          (s) => `
+      <div class="row">
+        <div class="grow">
+          <div class="vname">Python ${esc(s.version)} <span class="badge">${t("sys_" + s.origin)}</span></div>
+          <div class="vmeta">${esc(s.path)}</div>
+        </div>
+      </div>`
+        )
+        .join("")
+    : `<div class="empty">${t("sys_empty")}</div>`;
   c.innerHTML = `
     <div class="panel-head"><div class="panel-title">${t("nav_installed")}</div></div>
-    <div class="list-scroll">${rows}</div>`;
+    <div class="list-scroll">${rows}</div>
+    <div class="panel-head" style="margin-top:20px"><div class="panel-title" style="font-size:16px">${t("sys_title")}</div></div>
+    <div class="panel-hint">${t("sys_hint")}</div>
+    <div class="list-scroll">${sysRows}</div>`;
 
   c.querySelectorAll("[data-act]").forEach((b) =>
     b.addEventListener("click", async () => {

@@ -519,3 +519,8 @@ pub fn init_pvm() -> Result<String, String> {
     }
     Ok(msg)
 }
+
+#[tauri::command]
+pub fn list_system_pythons() -> Vec<pvm::system::SystemPython> {
+    pvm::system::list_system_pythons()
+}

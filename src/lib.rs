@@ -16,6 +16,7 @@ pub mod resolve;
 pub mod shim;
 pub mod source_pbs;
 pub mod source_pyorg;
+pub mod system;
 pub mod venv;
 pub mod version;
 pub mod winpath;
