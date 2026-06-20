@@ -15,6 +15,7 @@
 - **虚拟环境管理**：基于选定版本创建 / 列出 / 删除 venv。
 - **pip 国内镜像加速**：内置清华 / 阿里 / 中科大 / 腾讯 / 华为镜像，写入 `pip.ini`。
 - 单 exe 分发，静态链接 CRT（`+crt-static`），目标机无需 VC++ 运行库。
+- **图形界面（Tauri GUI）**：可视化管理已安装 / 远程版本，应用内**多线程分块下载** + 自动安装、实时进度条；含虚拟环境、pip 镜像管理，中英双语界面与深 / 浅主题。
 
 ## 系统要求
 
@@ -26,6 +27,14 @@
 ```powershell
 cargo build --release
 # 产物：target\release\pvm.exe / pvm-shim.exe / pvm-shimw.exe
+```
+
+构建图形界面（Tauri，需要 tauri-cli）：
+
+```powershell
+cargo install tauri-cli --version "^2" --locked
+cargo tauri build --config gui/tauri.conf.json
+# 产物：target\release\pvm-gui.exe 及安装包
 ```
 
 可选启用 `--flavor full`（pgo-full.tar.zst，需 C 工具链）：
@@ -67,6 +76,14 @@ pvm init
 | `pvm root` | 打印根目录 |
 
 版本选择符支持：`3` / `3.12` / `3.12.7` / `3.12.7@org` / `3.13t` / `latest` / 完整 canonical id。
+
+## 图形界面
+
+运行 `pvm-gui.exe`，左侧在「已安装 / 安装新版本 / 虚拟环境 / pip 镜像 / 设置」间切换：
+
+- **安装新版本**：选择来源（standalone / python.org），点「安装」即在应用内多线程下载并自动安装，进度条实时刷新；可设下载线程数与「安装后设为全局」。
+- **虚拟环境 / pip 镜像 / 设置**：图形化管理，与 CLI 等价。
+- 右上角可切换中英语言与深 / 浅主题；设置页「初始化」一键安装 shim 并写入 PATH（需 GUI 与 `pvm.exe`/shim 同目录）。
 
 ## 双来源命名
 

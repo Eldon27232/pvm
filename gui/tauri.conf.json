@@ -1,0 +1,35 @@
+{
+  "$schema": "https://schema.tauri.app/config/2.0.0",
+  "productName": "pvm",
+  "version": "0.1.0",
+  "identifier": "com.eldon.pvm",
+  "build": {
+    "frontendDist": "dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "pvm — Python 版本管理器",
+        "width": 1120,
+        "height": 780,
+        "minWidth": 900,
+        "minHeight": 620,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ]
+  }
+}

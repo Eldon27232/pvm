@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>pvm</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">pvm</div>
+      <span id="app-title"></span>
+    </div>
+    <div class="top-actions">
+      <span id="current-badge" class="badge badge-current"></span>
+      <button id="theme-btn" class="icon-btn" title="theme">◐</button>
+      <button id="lang-btn" class="icon-btn">EN</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav class="sidebar" id="nav">
+      <button class="nav-item active" data-nav="installed"></button>
+      <button class="nav-item" data-nav="install"></button>
+      <button class="nav-item" data-nav="venv"></button>
+      <button class="nav-item" data-nav="mirror"></button>
+      <button class="nav-item" data-nav="settings"></button>
+    </nav>
+    <main class="content" id="content"></main>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="i18n.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

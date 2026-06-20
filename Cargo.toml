@@ -62,9 +62,12 @@ default = []
 # 启用后才能安装 --flavor full（pgo-full.tar.zst），引入 zstd / C 工具链
 zstd-full = ["dep:zstd"]
 
+[workspace]
+members = ["gui"]
+resolver = "2"
+
 [profile.release]
 opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true
-panic = "abort"
