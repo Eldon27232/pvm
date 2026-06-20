@@ -710,3 +710,28 @@ pub fn open_url(url: String) -> Result<(), String> {
     c.spawn().map_err(|e| format!("打开链接失败: {e}"))?;
     Ok(())
 }
+
+#[tauri::command]
+pub async fn pkg_search(query: String) -> Result<Vec<pvm::pkg::SearchHit>, String> {
+    let p = paths()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        pvm::pkg::search_pypi(&query, &p.cache()).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn pkg_dry_run(
+    py_exe: String,
+    spec: String,
+    mirror: Option<String>,
+) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let url = resolve_mirror_url(mirror);
+        pvm::pkg::dry_run(std::path::Path::new(&py_exe), &spec, url.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}

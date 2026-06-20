@@ -205,8 +205,10 @@ async function renderPackages(c) {
         <button class="btn" id="pkgterm" style="align-self:flex-end;margin-bottom:12px">${t("pkg_open_terminal")}</button>
       </div>
       <div class="inline">
-        <div class="field" style="flex:1;min-width:180px"><label>${t("pkg_install_spec")}</label><input type="text" id="pkgspec" placeholder="requests / numpy==1.26.0"/></div>
-        <div class="field" style="min-width:130px"><label>${t("venv_mirror")}</label><select id="pkgmirror">${mopts}</select></div>
+        <div class="field" style="flex:1;min-width:160px"><label>${t("pkg_install_spec")}</label><input type="text" id="pkgspec" placeholder="requests / numpy==1.26.0"/></div>
+        <div class="field" style="min-width:120px"><label>${t("venv_mirror")}</label><select id="pkgmirror">${mopts}</select></div>
+        <button class="btn" id="pkgsearch2" style="align-self:flex-end;margin-bottom:12px">${t("pkg_search_pypi")}</button>
+        <button class="btn" id="pkgpreview" style="align-self:flex-end;margin-bottom:12px">${t("pkg_preview")}</button>
         <button class="btn btn-primary" id="pkginstall" style="align-self:flex-end;margin-bottom:12px">${t("btn_install")}</button>
       </div>
       <div class="actions">
@@ -232,6 +234,11 @@ async function renderPackages(c) {
     await pkgOp(() => invoke("pkg_install", { pyExe: py(), spec, mirror: mirror(), upgrade: false }), t("pkg_installing", { spec }));
     document.getElementById("pkgspec").value = "";
     loadPackages();
+  });
+  document.getElementById("pkgsearch2").addEventListener("click", showSearch);
+  document.getElementById("pkgpreview").addEventListener("click", () => {
+    const spec = document.getElementById("pkgspec").value.trim();
+    if (spec) showDryRun(spec);
   });
   document.getElementById("pkgoutdated").addEventListener("click", async () => {
     toast(t("pkg_checking"), "");
@@ -419,6 +426,65 @@ function openModal(html) {
 }
 function closeModal() { const m = document.getElementById("modal"); if (m) m.style.display = "none"; }
 async function openExt(url) { try { await invoke("open_url", { url }); } catch (e) { try { await navigator.clipboard.writeText(url); toast(t("copied"), "ok"); } catch (_) {} } }
+
+// ---------- PyPI 在线搜索 ----------
+async function showSearch() {
+  openModal(`
+    <div class="detail-head"><div class="detail-title">${t("pkg_search_pypi")}</div><button class="icon-btn" id="modal-close">✕</button></div>
+    <div class="searchbar"><input type="text" id="srch-q" placeholder="${t("pkg_search_ph")}"/><button class="btn btn-primary" id="srch-go">${t("pkg_search_pypi")}</button></div>
+    <div class="list-scroll" id="srch-list" style="max-height:50vh"><div class="muted">${t("pkg_search_hint")}</div></div>`);
+  document.getElementById("modal-close").addEventListener("click", closeModal);
+  const run = async () => {
+    const q = document.getElementById("srch-q").value.trim();
+    if (!q) return;
+    const box = document.getElementById("srch-list");
+    box.innerHTML = `<div class="empty"><span class="spin"></span> ${t("loading")}</div>`;
+    try {
+      const hits = await invoke("pkg_search", { query: q });
+      if (!hits.length) { box.innerHTML = `<div class="empty">${t("pkg_search_none")}</div>`; return; }
+      box.innerHTML = hits.map((h) => `
+        <div class="row"><div class="grow"><div class="vname">${esc(h.name)}</div></div>
+        <div class="actions">
+          <button class="btn btn-sm" data-srch-detail="${esc(h.name)}">${t("pkg_detail")}</button>
+          <button class="btn btn-sm btn-primary" data-srch-install="${esc(h.name)}">${t("btn_install")}</button>
+        </div></div>`).join("");
+      box.querySelectorAll("[data-srch-detail]").forEach((b) => b.addEventListener("click", () => showDetail(b.dataset.srchDetail)));
+      box.querySelectorAll("[data-srch-install]").forEach((b) => b.addEventListener("click", async () => {
+        const name = b.dataset.srchInstall;
+        closeModal();
+        await pkgOp(() => invoke("pkg_install", { pyExe: state.pkgPy, spec: name, mirror: curMirror(), upgrade: false }), t("pkg_installing", { spec: name }));
+        loadPackages();
+      }));
+    } catch (e) { box.innerHTML = `<div class="empty">${t("err_prefix")}${esc(e)}</div>`; }
+  };
+  document.getElementById("srch-go").addEventListener("click", run);
+  document.getElementById("srch-q").addEventListener("keydown", (e) => { if (e.key === "Enter") run(); });
+  document.getElementById("srch-q").focus();
+}
+
+// ---------- 安装前 dry-run 预览 ----------
+async function showDryRun(spec) {
+  openModal(`
+    <div class="detail-head"><div class="detail-title">${t("pkg_preview")} · ${esc(spec)}</div><button class="icon-btn" id="modal-close">✕</button></div>
+    <div id="dry-body"><div class="empty"><span class="spin"></span> ${t("loading")}</div></div>`);
+  document.getElementById("modal-close").addEventListener("click", closeModal);
+  try {
+    const changes = await invoke("pkg_dry_run", { pyExe: state.pkgPy, spec, mirror: curMirror() });
+    const body = document.getElementById("dry-body");
+    if (!changes.length) { body.innerHTML = `<div class="muted">${t("pkg_dry_none")}</div>`; return; }
+    body.innerHTML = `<div class="panel-hint">${t("pkg_dry_will")}（${changes.length}）</div>` +
+      changes.map((c) => `<div class="kv"><span>${esc(c)}</span></div>`).join("") +
+      `<div class="actions" style="margin-top:12px"><button class="btn btn-primary" id="dry-install">${t("btn_install")}</button></div>`;
+    document.getElementById("dry-install").addEventListener("click", async () => {
+      closeModal();
+      await pkgOp(() => invoke("pkg_install", { pyExe: state.pkgPy, spec, mirror: curMirror(), upgrade: false }), t("pkg_installing", { spec }));
+      loadPackages();
+    });
+  } catch (e) {
+    const body = document.getElementById("dry-body");
+    if (body) body.innerHTML = `<div class="empty">${t("err_prefix")}${esc(e)}</div>`;
+  }
+}
 
 // ---------- 面板：安装新版本 ----------
 async function renderInstall(c) {

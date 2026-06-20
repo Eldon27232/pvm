@@ -49,6 +49,13 @@ pub struct PypiInfo {
     pub readme: String,
 }
 
+#[derive(Serialize)]
+pub struct SearchHit {
+    pub name: String,
+    pub version: String,
+    pub summary: String,
+}
+
 // ---------- 纯 Rust：site-packages 扫描 ----------
 
 /// 由 python.exe 路径推断 site-packages 目录（venv 的 Scripts/ 或 prefix 根）。
@@ -398,4 +405,112 @@ fn run_capture(mut c: Command, label: &str) -> Result<String> {
     } else {
         Err(PvmError::Config(format!("{label} 失败:\n{stderr}")))
     }
+}
+
+/// `pip install --dry-run`：返回将安装/升级/降级的 "name-version" 列表（空=无需变更）。
+pub fn dry_run(py: &Path, spec: &str, mirror_url: Option<&str>) -> Result<Vec<String>> {
+    let mut c = pip(py);
+    c.arg("install").arg("--dry-run").arg("--no-input");
+    if let Some(m) = mirror_url {
+        c.arg("-i").arg(m);
+    }
+    c.arg(spec);
+    let out = c
+        .output()
+        .map_err(|e| PvmError::Config(format!("运行 pip --dry-run 失败: {e}")))?;
+    if !out.status.success() {
+        return Err(PvmError::Config(format!(
+            "预览失败:\n{}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for line in stdout.lines() {
+        if let Some(rest) = line.trim().strip_prefix("Would install ") {
+            return Ok(rest.split_whitespace().map(|s| s.to_string()).collect());
+        }
+    }
+    Ok(Vec::new())
+}
+
+/// 在线搜索 PyPI：基于官方 Simple Index 全量包名做本地子串匹配
+/// （warehouse 网页搜索已不可抓取）。首次拉取约 15MB 索引并缓存。
+pub fn search_pypi(query: &str, cache_dir: &Path) -> Result<Vec<SearchHit>> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return Ok(Vec::new());
+    }
+    let names = pypi_names(cache_dir)?;
+    let mut hits: Vec<&String> = names.iter().filter(|n| n.to_lowercase().contains(&q)).collect();
+    hits.sort_by_key(|n| {
+        let nl = n.to_lowercase();
+        if nl == q {
+            0
+        } else if nl.starts_with(&q) {
+            1
+        } else {
+            2
+        }
+    });
+    Ok(hits
+        .into_iter()
+        .take(60)
+        .map(|n| SearchHit {
+            name: n.clone(),
+            version: String::new(),
+            summary: String::new(),
+        })
+        .collect())
+}
+
+/// 进程内缓存的 PyPI 全量包名（首次从磁盘缓存或网络加载）。
+fn pypi_names(cache_dir: &Path) -> Result<&'static Vec<String>> {
+    static NAMES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    if NAMES.get().is_none() {
+        let loaded = load_pypi_names(cache_dir)?;
+        let _ = NAMES.set(loaded);
+    }
+    Ok(NAMES.get().expect("pypi 包名已初始化"))
+}
+
+fn load_pypi_names(cache_dir: &Path) -> Result<Vec<String>> {
+    let cache = cache_dir.join("pypi-names.json");
+    if let Ok(text) = std::fs::read_to_string(&cache) {
+        if let Ok(names) = serde_json::from_str::<Vec<String>>(&text) {
+            if !names.is_empty() {
+                return Ok(names);
+            }
+        }
+    }
+    let resp = crate::net::agent()
+        .get("https://pypi.org/simple/")
+        .header("User-Agent", "pvm")
+        .header("Accept", "application/vnd.pypi.simple.v1+json")
+        .call()
+        .map_err(|e| PvmError::Http(format!("拉取 PyPI 包索引失败: {e}")))?;
+    let mut resp = resp;
+    let mut s = String::new();
+    resp.body_mut()
+        .as_reader()
+        .read_to_string(&mut s)
+        .map_err(|e| PvmError::Http(e.to_string()))?;
+    let val: serde_json::Value =
+        serde_json::from_str(&s).map_err(|e| PvmError::Http(format!("解析 PyPI 索引失败: {e}")))?;
+    let names: Vec<String> = val
+        .get("projects")
+        .and_then(|p| p.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|o| o.get("name").and_then(|n| n.as_str()).map(|x| x.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    if names.is_empty() {
+        return Err(PvmError::Http("PyPI 包索引为空".into()));
+    }
+    std::fs::create_dir_all(cache_dir).ok();
+    if let Ok(t) = serde_json::to_string(&names) {
+        std::fs::write(&cache, t).ok();
+    }
+    Ok(names)
 }

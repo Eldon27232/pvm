@@ -38,6 +38,8 @@ fn main() {
             commands::pkg_pypi,
             commands::open_terminal,
             commands::open_url,
+            commands::pkg_search,
+            commands::pkg_dry_run,
         ])
         .run(tauri::generate_context!())
         .expect("运行 pvm GUI 失败");
