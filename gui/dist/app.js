@@ -697,6 +697,7 @@ async function renderSettings(c) {
       <div class="kv"><span class="k">${t("diag_inpath")}</span><span>${doc.shims_in_path ? t("yes") : t("no")}</span></div>
       <div class="kv"><span class="k">${t("diag_global")}</span><span>${doc.global ? esc(doc.global) : t("none")}</span></div>
       <div class="kv"><span class="k">${t("diag_count")}</span><span>${doc.installed_count}</span></div>
+      <div class="kv"><span class="k">${t("diag_proxy")}</span><span>${esc(doc.proxy)}</span></div>
       <div class="actions" style="margin-top:12px"><button class="btn btn-primary" id="initbtn">${t("btn_init")}</button></div>
     </div>
     <div class="card">

@@ -465,6 +465,7 @@ pub struct DoctorInfo {
     shims_in_path: bool,
     global: Option<String>,
     installed_count: usize,
+    proxy: String,
 }
 
 #[tauri::command]
@@ -481,6 +482,7 @@ pub fn doctor() -> Result<DoctorInfo, String> {
         global: global_version(&p).map(|v| v.canonical()),
         installed_count: resolve::list_installed(&p).map(|v| v.len()).unwrap_or(0),
         root: p.root.display().to_string(),
+        proxy: pvm::net::detect_proxy().unwrap_or_else(|| "(直连)".into()),
     })
 }
 

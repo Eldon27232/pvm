@@ -247,7 +247,7 @@ fn dep_name(req: &str) -> String {
 
 pub fn pypi_info(name: &str) -> Result<PypiInfo> {
     let url = format!("https://pypi.org/pypi/{name}/json");
-    let resp = ureq::get(&url)
+    let resp = crate::net::agent().get(&url)
         .header("User-Agent", "pvm")
         .call()
         .map_err(|e| PvmError::Http(format!("PyPI 请求失败: {e}")))?;

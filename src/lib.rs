@@ -10,6 +10,7 @@ pub mod commands;
 pub mod config;
 pub mod download;
 pub mod error;
+pub mod net;
 pub mod paths;
 pub mod pip;
 pub mod pkg;

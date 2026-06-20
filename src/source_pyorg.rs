@@ -44,7 +44,7 @@ pub fn list_remote(paths: &Paths, refresh: bool) -> Result<Vec<PyOrgRelease>> {
     }
 
     let url = "https://www.python.org/ftp/python/";
-    let resp = ureq::get(url)
+    let resp = crate::net::agent().get(url)
         .header("User-Agent", "pvm")
         .call()
         .map_err(|e| PvmError::Http(format!("拉取 python.org 版本列表失败: {e}")))?;

@@ -123,36 +123,57 @@ fn fetch_all_assets(token: Option<&str>) -> Result<Vec<PbsAsset>> {
 fn fetch_page(token: Option<&str>, page: u32) -> Result<Vec<serde_json::Value>> {
     let url = format!("https://api.github.com/repos/{PBS_REPO}/releases?per_page=100&page={page}");
     let auth = token.map(|t| format!("Bearer {t}"));
-    let mut req = ureq::get(&url)
-        .header("User-Agent", "pvm")
-        .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28");
-    if let Some(a) = &auth {
-        req = req.header("Authorization", a.as_str());
-    }
-    let resp = req.call().map_err(|e| {
-        let msg = e.to_string();
-        if msg.contains("403") || msg.contains("429") || msg.to_lowercase().contains("rate") {
-            PvmError::RateLimited {
-                reset: "稍后重试，或设置 GITHUB_TOKEN 提升限额".into(),
-            }
-        } else {
-            PvmError::Http(format!("GitHub API 请求失败: {msg}"))
+    // api.github.com 经部分代理节点偶发 5xx/超时，重试几次提升成功率
+    let mut last = String::new();
+    for attempt in 0..4u32 {
+        let mut req2 = crate::net::agent()
+            .get(&url)
+            .header("User-Agent", "pvm")
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28");
+        if let Some(a) = &auth {
+            req2 = req2.header("Authorization", a.as_str());
         }
-    })?;
-
-    let mut resp = resp;
-    let mut s = String::new();
-    resp.body_mut()
-        .as_reader()
-        .read_to_string(&mut s)
-        .map_err(|e| PvmError::Http(e.to_string()))?;
-    let val: serde_json::Value =
-        serde_json::from_str(&s).map_err(|e| PvmError::Http(format!("解析 GitHub 响应失败: {e}")))?;
-    match val {
-        serde_json::Value::Array(a) => Ok(a),
-        _ => Ok(Vec::new()),
+        match req2.call() {
+            Ok(resp) => {
+                let mut resp = resp;
+                let mut s = String::new();
+                resp.body_mut()
+                    .as_reader()
+                    .read_to_string(&mut s)
+                    .map_err(|e| PvmError::Http(e.to_string()))?;
+                let val: serde_json::Value = serde_json::from_str(&s)
+                    .map_err(|e| PvmError::Http(format!("解析 GitHub 响应失败: {e}")))?;
+                return match val {
+                    serde_json::Value::Array(a) => Ok(a),
+                    _ => Ok(Vec::new()),
+                };
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                let lower = msg.to_lowercase();
+                if msg.contains("403") || msg.contains("429") || lower.contains("rate") {
+                    return Err(PvmError::RateLimited {
+                        reset: "稍后重试，或设置 GITHUB_TOKEN 提升限额".into(),
+                    });
+                }
+                let retriable = msg.contains("504")
+                    || msg.contains("502")
+                    || msg.contains("503")
+                    || lower.contains("timeout")
+                    || lower.contains("timed out");
+                last = msg;
+                if retriable && attempt < 3 {
+                    std::thread::sleep(std::time::Duration::from_millis(500 * (attempt as u64 + 1)));
+                    continue;
+                }
+                break;
+            }
+        }
     }
+    Err(PvmError::Http(format!(
+        "GitHub API 请求失败（已重试；常见于代理对 api.github.com 的节点超时，可改用 --source cpython 或设 GITHUB_TOKEN）: {last}"
+    )))
 }
 
 fn parse_asset(name: &str, a: &serde_json::Value, re: &regex::Regex) -> Option<PbsAsset> {

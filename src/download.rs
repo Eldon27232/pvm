@@ -18,7 +18,7 @@ pub struct DownloadOpts<'a> {
 }
 
 pub fn download_to(opts: &DownloadOpts) -> Result<()> {
-    let resp = ureq::get(opts.url)
+    let resp = crate::net::agent().get(opts.url)
         .header("User-Agent", "pvm")
         .call()
         .map_err(|e| PvmError::Http(format!("GET {} 失败: {e}", opts.url)))?;
@@ -191,7 +191,7 @@ pub fn download_parallel(
 
 /// HEAD 探测总大小与 Range 支持。
 fn probe(url: &str) -> Result<(u64, bool)> {
-    let resp = ureq::head(url)
+    let resp = crate::net::agent().head(url)
         .header("User-Agent", "pvm")
         .call()
         .map_err(|e| PvmError::Http(e.to_string()))?;
@@ -217,7 +217,7 @@ fn download_range(
     file: &File,
     downloaded: &AtomicU64,
 ) -> std::result::Result<(), String> {
-    let resp = ureq::get(url)
+    let resp = crate::net::agent().get(url)
         .header("User-Agent", "pvm")
         .header("Range", &format!("bytes={start}-{end}"))
         .call()
@@ -247,7 +247,7 @@ fn download_single(
     known_total: u64,
     on_progress: &(dyn Fn(u64, u64) + Send + Sync),
 ) -> Result<()> {
-    let resp = ureq::get(url)
+    let resp = crate::net::agent().get(url)
         .header("User-Agent", "pvm")
         .call()
         .map_err(|e| PvmError::Http(format!("GET {url} 失败: {e}")))?;
