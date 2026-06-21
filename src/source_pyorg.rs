@@ -9,6 +9,15 @@ use std::io::Read;
 use std::path::Path;
 use std::process::Command;
 
+/// 给子进程加 CREATE_NO_WINDOW，避免 release GUI（无 console）调用外部命令时闪现控制台窗口。
+#[cfg(windows)]
+fn no_window(c: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    c.creation_flags(0x0800_0000);
+}
+#[cfg(not(windows))]
+fn no_window(_c: &mut Command) {}
+
 #[allow(dead_code)]
 pub enum PyOrgFlavor {
     Installer,
@@ -188,11 +197,10 @@ fn install_from_installer_exe(v: &PythonVersion, paths: &Paths, exe: &Path) -> R
         "Include_tcltk=1".to_string(),
     ];
 
-    let status = Command::new(exe)
-        .args(&args)
-        .arg("/log")
-        .arg(&log)
-        .status();
+    let mut cmd = Command::new(exe);
+    cmd.args(&args).arg("/log").arg(&log);
+    no_window(&mut cmd);
+    let status = cmd.status();
     let result = match status {
         Ok(s) => match s.code() {
             Some(0) | Some(3010) => Ok(()),
@@ -241,13 +249,13 @@ pub fn uninstall_via_installer(v: &PythonVersion, paths: &Paths) -> Result<()> {
         exe
     };
 
-    let status = Command::new(&exe)
-        .args(["/quiet", "/uninstall"])
-        .status()
-        .map_err(|e| PvmError::Installer {
-            code: -1,
-            log: format!("无法启动卸载器: {e}"),
-        })?;
+    let mut cmd = Command::new(&exe);
+    cmd.args(["/quiet", "/uninstall"]);
+    no_window(&mut cmd);
+    let status = cmd.status().map_err(|e| PvmError::Installer {
+        code: -1,
+        log: format!("无法启动卸载器: {e}"),
+    })?;
     match status.code() {
         Some(0) | Some(3010) => {}
         Some(code) => {
@@ -329,8 +337,10 @@ fn bootstrap_pip(dir: &Path, paths: &Paths) -> Result<()> {
         quiet: false,
     })?;
     let py = dir.join("python.exe");
-    let status = Command::new(&py)
-        .arg(&getpip)
+    let mut cmd = Command::new(&py);
+    cmd.arg(&getpip);
+    no_window(&mut cmd);
+    let status = cmd
         .status()
         .map_err(|e| PvmError::Http(format!("运行 get-pip.py 失败: {e}")))?;
     if !status.success() {

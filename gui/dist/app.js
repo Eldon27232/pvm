@@ -98,6 +98,7 @@ function render() {
     install: renderInstall,
     venv: renderVenv,
     mirror: renderMirror,
+    assistant: renderAssistant,
     settings: renderSettings,
   }[state.nav])(c);
 }
@@ -546,6 +547,135 @@ function openModal(html) {
 function closeModal() { const m = document.getElementById("modal"); if (m) m.style.display = "none"; }
 async function openExt(url) { try { await invoke("open_url", { url }); } catch (e) { try { await navigator.clipboard.writeText(url); toast(t("copied"), "ok"); } catch (_) {} } }
 
+// 轻量 markdown：转义后处理 ```代码块```、`行内代码`、**粗体**、换行。
+function renderMd(s) {
+  return String(s).split(/```/).map((p, i) => {
+    if (i % 2 === 1) {
+      const code = p.replace(/^[a-zA-Z0-9_+\-]*\n/, ""); // 去掉首行语言标记
+      return `<pre class="chat-code">${esc(code.replace(/\n$/, ""))}</pre>`;
+    }
+    let h = esc(p);
+    h = h.replace(/`([^`]+)`/g, "<code>$1</code>");
+    h = h.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    return h.replace(/\n/g, "<br>");
+  }).join("");
+}
+
+// ---------- 面板：AI 助手 ----------
+async function renderAssistant(c) {
+  if (!state.chat) state.chat = lsGet("chat") || [];
+  const ai = await call("get_ai_config");
+  const configured = ai.has_key && ai.base_url && ai.model;
+  const msgs = state.chat.length
+    ? state.chat.map((m) => `<div class="chat-msg chat-${m.role}"><div class="chat-bubble">${renderMd(m.content)}</div></div>`).join("")
+    : `<div class="empty">${t("ai_chat_empty")}</div>`;
+  c.innerHTML = `
+    <div class="panel-head">
+      <div class="panel-title">${t("nav_assistant")}</div>
+      <button class="btn btn-sm" id="chat-clear">${t("ai_chat_clear")}</button>
+    </div>
+    ${configured ? "" : `<div class="card"><div class="muted">${t("ai_chat_unconfigured")}</div></div>`}
+    <div class="card chat-card">
+      <div class="list-scroll chat-list" id="chat-list">${msgs}</div>
+      <div class="chat-input-row">
+        <textarea id="chat-input" rows="2" placeholder="${t("ai_chat_placeholder")}" ${configured ? "" : "disabled"}></textarea>
+        <button class="btn btn-primary" id="chat-send" ${configured ? "" : "disabled"}>${t("ai_chat_send")}</button>
+      </div>
+      <div class="muted chat-hint">${t("ai_chat_hint")}</div>
+    </div>`;
+  const list = document.getElementById("chat-list");
+  list.scrollTop = list.scrollHeight;
+
+  const send = async () => {
+    const ta = document.getElementById("chat-input");
+    const text = ta.value.trim();
+    if (!text) return;
+    state.chat.push({ role: "user", content: text });
+    lsSet("chat", state.chat);
+    ta.value = "";
+    renderAssistant(c); // 重渲染显示用户消息
+    // 临时“思考中”气泡 + 禁用输入
+    const l2 = document.getElementById("chat-list");
+    const thinking = document.createElement("div");
+    thinking.className = "chat-msg chat-assistant";
+    thinking.innerHTML = `<div class="chat-bubble"><span class="spin"></span> ${t("ai_chat_thinking")}</div>`;
+    l2.appendChild(thinking);
+    l2.scrollTop = l2.scrollHeight;
+    document.getElementById("chat-send").disabled = true;
+    document.getElementById("chat-input").disabled = true;
+    try {
+      const reply = await invoke("ai_chat", { history: state.chat });
+      state.chat.push({ role: "assistant", content: reply });
+      lsSet("chat", state.chat);
+    } catch (e) {
+      toast(t("err_prefix") + e, "err");
+    }
+    renderAssistant(c);
+  };
+  document.getElementById("chat-send").addEventListener("click", send);
+  document.getElementById("chat-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send(); }
+  });
+  document.getElementById("chat-clear").addEventListener("click", () => {
+    state.chat = [];
+    lsSet("chat", []);
+    renderAssistant(c);
+  });
+}
+
+// ---------- 自更新 ----------
+function checkUpdateSilent() {
+  // 启动静默检测：网络失败/无更新都不打扰用户。
+  invoke("check_update").then((u) => {
+    if (u && u.has_update && lsGet("skipUpdate") !== u.latest) showUpdateModal(u);
+  }).catch(() => {});
+}
+
+function showUpdateModal(u) {
+  const action = u.download_url
+    ? `<button class="btn btn-primary" id="upd-go">${t("upd_install")}</button>`
+    : `<button class="btn btn-primary" id="upd-page">${t("upd_open_page")}</button>`;
+  openModal(`
+    <div class="detail-head"><div class="detail-title">${t("upd_title")} ${esc(u.latest)}</div><button class="icon-btn" id="modal-close">✕</button></div>
+    <div class="muted" style="margin:4px 0 10px">${esc(u.current)} → ${esc(u.latest)}</div>
+    <div class="list-scroll" style="max-height:48vh">${renderMd(u.notes || t("upd_no_notes"))}</div>
+    <div class="actions" style="margin-top:12px">
+      ${action}
+      <button class="btn" id="upd-skip">${t("upd_skip")}</button>
+      <button class="btn" id="upd-later">${t("upd_later")}</button>
+    </div>`);
+  document.getElementById("modal-close").addEventListener("click", closeModal);
+  document.getElementById("upd-later").addEventListener("click", closeModal);
+  document.getElementById("upd-skip").addEventListener("click", () => { lsSet("skipUpdate", u.latest); closeModal(); });
+  const go = document.getElementById("upd-go");
+  if (go) go.addEventListener("click", async () => {
+    if (!confirm(t("upd_confirm"))) return;
+    go.disabled = true;
+    go.textContent = t("upd_downloading");
+    try {
+      await invoke("download_and_run_update", { url: u.download_url, assetName: u.asset_name });
+      // 成功后 app 将退出，安装器接管
+    } catch (e) {
+      toast(t("err_prefix") + e, "err");
+      go.disabled = false;
+      go.textContent = t("upd_install");
+    }
+  });
+  const pg = document.getElementById("upd-page");
+  if (pg) pg.addEventListener("click", () => openExt(u.html_url || REPO_URL));
+}
+
+async function manualCheckUpdate() {
+  toast(t("upd_checking"), "");
+  try {
+    const u = await invoke("check_update");
+    if (u && u.has_update) showUpdateModal(u);
+    else toast(t("upd_latest", { v: u ? u.current : "" }), "ok");
+  } catch (e) {
+    toast(t("err_prefix") + e, "err");
+  }
+}
+
 // ---------- PyPI 在线搜索 ----------
 async function showSearch() {
   openModal(`
@@ -850,7 +980,7 @@ async function renderVenv(c) {
     <div class="card">
       <div class="inline">
         <div class="field" style="flex:1;min-width:140px"><label>${t("venv_name")}</label><input type="text" id="vname" placeholder="myenv"/></div>
-        <div class="field" style="flex:1;min-width:160px"><label>${t("venv_pyver")}</label><select id="vpy">${opts || `<option value="">—</option>`}</select></div>
+        <div class="field" style="flex:1;min-width:160px"><label>${t("venv_interp")}</label><select id="vpy">${iopts || `<option value="">—</option>`}</select></div>
         <div class="field" style="min-width:140px"><label>${t("venv_mirror")}</label><select id="vmirror">${mopts}</select></div>
         <button class="btn btn-primary" id="vcreate" style="align-self:flex-end;margin-bottom:12px">${t("btn_create")}</button>
       </div>
@@ -878,10 +1008,13 @@ async function renderVenv(c) {
 
   document.getElementById("vcreate").addEventListener("click", async () => {
     const name = document.getElementById("vname").value.trim();
-    const selector = document.getElementById("vpy").value;
+    const val = document.getElementById("vpy").value;
+    const i = val.indexOf("|");
+    const pyExe = i >= 0 ? val.slice(0, i) : val;
+    const pyLabel = i >= 0 ? val.slice(i + 1) : "";
     const mirror = document.getElementById("vmirror").value || null;
-    if (!name || !selector) { toast(t("err_prefix") + t("venv_name") + " / " + t("venv_pyver"), "err"); return; }
-    await call("venv_create", { name, selector, mirror });
+    if (!name || !pyExe) { toast(t("err_prefix") + t("venv_name") + " / " + t("venv_interp"), "err"); return; }
+    await call("venv_create", { name, pyExe, pyLabel, mirror });
     toast(t("venv_created"), "ok");
     render();
   });
@@ -978,7 +1111,7 @@ async function renderMirror(c) {
 
 // ---------- 面板：设置 ----------
 async function renderSettings(c) {
-  const [cfg, doc, ai] = await Promise.all([call("get_config"), call("doctor"), call("get_ai_config")]);
+  const [cfg, doc, ai, ver] = await Promise.all([call("get_config"), call("doctor"), call("get_ai_config"), call("app_version")]);
   c.innerHTML = `
     <div class="panel-head"><div class="panel-title">${t("nav_settings")}</div></div>
     <div class="card">
@@ -993,8 +1126,7 @@ async function renderSettings(c) {
     </div>
     <div class="card">
       <div class="panel-hint">${t("settings_diag")}</div>
-      <div class="kv"><span class="k">${t("diag_shim")}</span><span>${doc.shim_ready ? t("ready") : t("missing")}</span></div>
-      <div class="kv"><span class="k">${t("diag_inpath")}</span><span>${doc.shims_in_path ? t("yes") : t("no")}</span></div>
+      ${doc.path_hijacked ? `<div class="kv"><span class="k">${t("diag_hijack")}</span><span style="color:#e5534b">${t("diag_hijack_warn")}</span></div>` : ""}
       <div class="kv"><span class="k">${t("diag_global")}</span><span>${doc.global ? esc(doc.global) : t("none")}</span></div>
       <div class="kv"><span class="k">${t("diag_count")}</span><span>${doc.installed_count}</span></div>
       <div class="kv"><span class="k">${t("diag_proxy")}</span><span>${esc(doc.proxy)}</span></div>
@@ -1043,8 +1175,12 @@ async function renderSettings(c) {
     </div>
     <div class="card">
       <div class="panel-hint">${t("settings_about")}</div>
-      <div class="muted">${t("about_text")}</div>
-      <div class="actions" style="margin-top:10px"><button class="btn" id="gh-btn">${t("github_repo")}</button></div>
+      <div class="kv"><span class="k">${t("settings_version")}</span><span>v${esc(ver)}</span></div>
+      <div class="muted" style="margin-top:6px">${t("about_text")}</div>
+      <div class="actions" style="margin-top:10px">
+        <button class="btn btn-primary" id="checkupd-btn">${t("upd_check")}</button>
+        <button class="btn" id="gh-btn">${t("github_repo")}</button>
+      </div>
     </div>`;
 
   document.getElementById("defsrc").addEventListener("change", async (e) => {
@@ -1057,6 +1193,7 @@ async function renderSettings(c) {
     render();
   });
   document.getElementById("gh-btn").addEventListener("click", () => openExt(REPO_URL));
+  document.getElementById("checkupd-btn").addEventListener("click", manualCheckUpdate);
   document.getElementById("proxysave").addEventListener("click", async () => {
     const m = document.getElementById("proxymode").value;
     const url = document.getElementById("proxyurl").value.trim();
@@ -1120,6 +1257,7 @@ function prewarm() {
       invoke("pkg_list", { pyExe: py }).then((pkgs) => lsSet("pkgs:" + py, pkgs)).catch(() => {});
     }
   }).catch(() => {});
+  checkUpdateSilent();
 }
 
 init();

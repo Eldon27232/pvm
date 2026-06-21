@@ -234,3 +234,19 @@ input:focus, select:focus { border-color: var(--accent); }
 .lnk:hover { text-decoration: underline; }
 .badge.dep { cursor: pointer; }
 .badge.dep:hover { color: var(--accent); border-color: var(--accent); }
+
+/* AI 助手对话 */
+.chat-card { display: flex; flex-direction: column; height: calc(100vh - 190px); min-height: 360px; }
+.chat-list { flex: 1; overflow-y: auto; padding-right: 4px; }
+.chat-msg { display: flex; margin: 10px 0; }
+.chat-msg.chat-user { justify-content: flex-end; }
+.chat-msg.chat-assistant { justify-content: flex-start; }
+.chat-bubble { max-width: 82%; padding: 10px 13px; border-radius: 12px; line-height: 1.55; font-size: 13.5px; word-break: break-word; }
+.chat-user .chat-bubble { background: var(--accent-soft); border: 1px solid var(--accent); }
+.chat-assistant .chat-bubble { background: var(--bg-elev2); border: 1px solid var(--border); }
+.chat-bubble code { background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; font-size: 12px; }
+.chat-code { white-space: pre-wrap; word-break: break-word; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 8px 0; font-size: 12px; line-height: 1.5; overflow-x: auto; }
+.chat-input-row { display: flex; gap: 10px; align-items: flex-end; margin-top: 10px; }
+.chat-input-row textarea { flex: 1; resize: vertical; min-height: 44px; background: var(--bg-elev2); color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 9px 12px; font-family: inherit; font-size: 13.5px; }
+.chat-input-row textarea:focus { outline: none; border-color: var(--accent); }
+.chat-hint { margin-top: 6px; font-size: 12px; }

@@ -82,6 +82,21 @@ fn copy_shim(tmpl: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
+/// 迁移：pvm 不再用 shim 接管 `python`。移除用户 PATH 里的 shims 目录项，并删除 shims 目录。
+/// 调用后系统 `python` 完全恢复（不再经 pvm 转发）。可重复调用。
+pub fn cleanup_legacy(p: &Paths) -> Result<()> {
+    let shims = p.shims();
+    #[cfg(windows)]
+    {
+        let s = shims.to_string_lossy().to_string();
+        crate::winpath::remove_shims_from_user_path(&s)?;
+    }
+    if shims.exists() {
+        std::fs::remove_dir_all(&shims).ok();
+    }
+    Ok(())
+}
+
 /// shim 入口：解析生效版本，转发到真实解释器/脚本，透传参数与退出码。
 pub fn run_shim() -> ! {
     std::process::exit(run_shim_inner());
@@ -108,19 +123,26 @@ fn run_shim_inner() -> i32 {
         }
     };
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let eff = match resolve_effective(&cwd, &paths) {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("pvm: {e}");
-            return 127;
-        }
-    };
+    // 优先 pvm 生效版本；无生效版本（或该入口缺失）时回退到 PATH 中的系统可执行，
+    // 避免 shim 抢占 python/pip 后拦截其它依赖系统 Python 的项目（兼容性关键）。
+    let eff = resolve_effective(&cwd, &paths).ok();
+    let pvm_target = eff
+        .as_ref()
+        .and_then(|e| locate_real_exe(&paths, &e.version, &stem))
+        .filter(|t| t.exists());
 
-    let target = locate_real_exe(&paths, &eff.version, &stem);
-    let target = match target {
-        Some(t) if t.exists() => t,
-        _ => {
-            eprintln!("pvm: 入口 {stem} 不存在于 {}", eff.version.canonical());
+    let target = match pvm_target.or_else(|| fallback_in_path(&stem, &paths.shims())) {
+        Some(t) => t,
+        None => {
+            match &eff {
+                Some(e) => eprintln!(
+                    "pvm: 入口 {stem} 不存在于 {}，且 PATH 中也未找到系统 {stem}",
+                    e.version.canonical()
+                ),
+                None => eprintln!(
+                    "pvm: 未设置 Python 版本，且 PATH 中未找到系统 {stem}（可 `pvm global <版本>` 设全局，或把系统 Python 加入 PATH）"
+                ),
+            }
             return 127;
         }
     };
@@ -147,4 +169,38 @@ fn locate_real_exe(paths: &Paths, v: &PythonVersion, stem: &str) -> Option<PathB
         "pythonw" => Some(paths.pythonw_exe(v)),
         other => Some(paths.scripts_dir(v).join(format!("{other}.exe"))),
     }
+}
+
+/// 无 pvm 生效版本时的兼容回退：在 PATH 中查找真实的 `<stem>.exe`，
+/// 跳过 pvm 自己的 shims 目录（防递归）与 WindowsApps 的 Microsoft Store 占位 stub。
+fn fallback_in_path(stem: &str, shims_dir: &Path) -> Option<PathBuf> {
+    let exe_name = format!("{stem}.exe");
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        if dir.as_os_str().is_empty() || same_dir(&dir, shims_dir) {
+            continue;
+        }
+        // 跳过 Microsoft Store 的假 python（运行会弹商店，不是真解释器）
+        if dir.to_string_lossy().to_lowercase().contains("windowsapps") {
+            continue;
+        }
+        let cand = dir.join(&exe_name);
+        if cand.is_file() {
+            return Some(cand);
+        }
+    }
+    None
+}
+
+/// 判断两个目录是否指向同一位置（优先 canonicalize，失败回退大小写无关字符串比较）。
+fn same_dir(a: &Path, b: &Path) -> bool {
+    if let (Ok(ca), Ok(cb)) = (a.canonicalize(), b.canonicalize()) {
+        return ca == cb;
+    }
+    let norm = |p: &Path| {
+        p.to_string_lossy()
+            .trim_end_matches(|c| c == '\\' || c == '/')
+            .to_lowercase()
+    };
+    norm(a) == norm(b)
 }

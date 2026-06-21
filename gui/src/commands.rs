@@ -352,12 +352,22 @@ pub fn venv_list() -> Result<Vec<VenvInfo>, String> {
         .collect())
 }
 
+/// 创建 venv。py_exe = 选定解释器的 python.exe 路径（pvm 安装的 / venv / 系统 Python 均可），
+/// py_label 仅用于写入元数据显示。直接用该解释器跑 `python -m venv`，因此支持系统 Python。
 #[tauri::command]
-pub fn venv_create(name: String, selector: String, mirror: Option<String>) -> Result<String, String> {
+pub fn venv_create(
+    name: String,
+    py_exe: String,
+    py_label: Option<String>,
+    mirror: Option<String>,
+) -> Result<String, String> {
     let p = paths()?;
+    let exe = PathBuf::from(&py_exe);
     let opts = VenvCreateOpts {
         name: &name,
-        py_selector: Some(&selector),
+        py_selector: None,
+        base_exe: Some(&exe),
+        base_label: py_label.as_deref(),
         in_project: false,
         path: None,
         clear: false,
@@ -563,6 +573,74 @@ pub async fn ai_find_packages(query: String) -> Result<Vec<pvm::pkg::SearchHit>,
     .map_err(|e| e.to_string())?
 }
 
+/// 从 Config 构造 AiConfig，缺项给出可读错误（供 AI 对话复用）。
+fn ai_config(c: Config) -> Result<pvm::ai::AiConfig, String> {
+    Ok(pvm::ai::AiConfig {
+        provider: c.ai_provider.unwrap_or_else(|| "openai".into()),
+        base_url: c
+            .ai_base_url
+            .filter(|s| !s.trim().is_empty())
+            .ok_or("未配置 AI Base URL（在设置页填写）")?,
+        key: c
+            .ai_key
+            .filter(|k| !k.trim().is_empty())
+            .ok_or("未配置 AI API Key（在设置页填写）")?,
+        model: c
+            .ai_model
+            .filter(|s| !s.trim().is_empty())
+            .ok_or("未配置 AI 模型（在设置页填写）")?,
+    })
+}
+
+/// AI 多轮对话：history 为 user/assistant 交替消息，返回助手回复。
+#[tauri::command]
+pub async fn ai_chat(history: Vec<pvm::ai::ChatMessage>) -> Result<String, String> {
+    let p = paths()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let c = Config::load(&p).map_err(|e| e.to_string())?;
+        let cfg = ai_config(c)?;
+        pvm::ai::chat(&cfg, &history).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 当前 GUI 版本号（设置页/关于显示用）。
+#[tauri::command]
+pub fn app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+// ---------- 自更新 ----------
+
+/// 查询 GitHub 最新版本，对比当前版本。网络失败返回 Err（前端可静默忽略）。
+#[tauri::command]
+pub async fn check_update() -> Result<pvm::selfupdate::UpdateInfo, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        pvm::selfupdate::check_update(env!("CARGO_PKG_VERSION")).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 下载安装器并启动，随后退出当前 app 让安装继续。
+#[tauri::command]
+pub async fn download_and_run_update(
+    app: AppHandle,
+    url: String,
+    asset_name: String,
+) -> Result<(), String> {
+    let p = paths()?;
+    let path = tauri::async_runtime::spawn_blocking(move || {
+        pvm::selfupdate::download_installer(&url, &asset_name, &p).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    pvm::selfupdate::run_installer(&path).map_err(|e| e.to_string())?;
+    app.exit(0);
+    Ok(())
+}
+
 // ---------- 批 3：漏洞扫描 / PATH 诊断 / 健康评分 / 依赖图 / uv ----------
 
 #[tauri::command]
@@ -626,8 +704,8 @@ pub fn set_default_source(source: String) -> Result<(), String> {
 #[derive(Serialize)]
 pub struct DoctorInfo {
     root: String,
-    shim_ready: bool,
-    shims_in_path: bool,
+    /// PATH 里是否仍残留旧版 pvm shims（接管 python）——true 表示需点初始化清理。
+    path_hijacked: bool,
     global: Option<String>,
     installed_count: usize,
     proxy: String,
@@ -637,13 +715,12 @@ pub struct DoctorInfo {
 pub fn doctor() -> Result<DoctorInfo, String> {
     let p = paths()?;
     let shims_str = p.shims().to_string_lossy().to_lowercase();
-    let in_path = std::env::var("PATH")
+    let hijacked = std::env::var("PATH")
         .unwrap_or_default()
         .split(';')
         .any(|x| x.trim().to_lowercase() == shims_str);
     Ok(DoctorInfo {
-        shim_ready: p.bin().join("pvm-shim.exe").exists(),
-        shims_in_path: in_path,
+        path_hijacked: hijacked,
         global: global_version(&p).map(|v| v.canonical()),
         installed_count: resolve::list_installed(&p).map(|v| v.len()).unwrap_or(0),
         root: p.root.display().to_string(),
@@ -651,47 +728,18 @@ pub fn doctor() -> Result<DoctorInfo, String> {
     })
 }
 
+/// 初始化：建目录 + 清理历史 shim 对系统 PATH 的接管。pvm 不修改系统 PATH。
 #[tauri::command]
 pub fn init_pvm() -> Result<String, String> {
     let p = paths()?;
-    for d in [
-        p.bin(),
-        p.shims(),
-        p.versions(),
-        p.venvs(),
-        p.cache(),
-        p.logs(),
-        p.backup(),
-    ] {
+    for d in [p.versions(), p.venvs(), p.cache(), p.logs(), p.backup()] {
         std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
     }
-    // 从 GUI exe 同目录拷 shim 模板（分发时三者同目录）
-    let cur = std::env::current_exe().map_err(|e| e.to_string())?;
-    let dir = cur.parent().map(|x| x.to_path_buf()).unwrap_or_default();
-    let mut missing = Vec::new();
-    for n in ["pvm-shim.exe", "pvm-shimw.exe", "pvm.exe"] {
-        let src = dir.join(n);
-        if src.exists() {
-            let _ = std::fs::copy(&src, p.bin().join(n));
-        } else {
-            missing.push(n);
-        }
-    }
-    pvm::shim::rehash(&p).map_err(|e| e.to_string())?;
-    let shims = p.shims().to_string_lossy().to_string();
-    pvm::winpath::prepend_shims_to_user_path(&shims, &p).map_err(|e| e.to_string())?;
-
-    let mut msg = format!(
-        "已初始化：{}\nshims 已加入用户 PATH（请重开终端生效）",
+    pvm::shim::cleanup_legacy(&p).map_err(|e| e.to_string())?;
+    Ok(format!(
+        "已初始化：{}\npvm 不修改系统 PATH（已清理历史 shim 接管）。使用所选解释器：点「打开终端」或为项目创建 venv。",
         p.root.display()
-    );
-    if !missing.is_empty() {
-        msg.push_str(&format!(
-            "\n注意：未找到 {}（命令行 shim 暂不可用，请确保这些 exe 与 GUI 同目录后重试 init）",
-            missing.join(", ")
-        ));
-    }
-    Ok(msg)
+    ))
 }
 
 #[tauri::command]
@@ -1011,6 +1059,8 @@ pub fn scaffold(dir: String, canonical: String, mirror: Option<String>) -> Resul
     let opts = VenvCreateOpts {
         name: "project",
         py_selector: Some(&canonical),
+        base_exe: None,
+        base_label: None,
         in_project: false,
         path: Some(&venv_path),
         clear: false,
