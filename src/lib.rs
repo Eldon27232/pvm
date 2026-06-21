@@ -17,6 +17,7 @@ pub mod paths;
 pub mod pip;
 pub mod pkg;
 pub mod resolve;
+pub mod selfupdate;
 pub mod shim;
 pub mod snapshot;
 pub mod source_pbs;

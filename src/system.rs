@@ -5,6 +5,15 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
 
+/// 给子进程加 CREATE_NO_WINDOW，避免 release GUI（无 console）调用外部命令时闪现控制台窗口。
+#[cfg(windows)]
+fn no_window(c: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    c.creation_flags(0x0800_0000);
+}
+#[cfg(not(windows))]
+fn no_window(_c: &mut Command) {}
+
 #[derive(serde::Serialize, Clone, Debug)]
 pub struct SystemPython {
     /// 版本号（尽量取到 x.y.z，最少 x.y）。
@@ -112,7 +121,10 @@ pub fn path_pythons() -> Vec<PathPython> {
 }
 
 fn collect_from_launcher(out: &mut Vec<SystemPython>, seen: &mut HashSet<String>) {
-    let output = match Command::new("py").arg("--list-paths").output() {
+    let mut cmd = Command::new("py");
+    cmd.arg("--list-paths");
+    no_window(&mut cmd); // GUI 无 console，避免 py launcher 闪现 cmd 窗口
+    let output = match cmd.output() {
         Ok(o) if o.status.success() => o,
         _ => return,
     };

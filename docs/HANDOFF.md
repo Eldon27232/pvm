@@ -59,7 +59,7 @@ cd gui && cargo tauri build           # → target\release\pvm-gui.exe + bundle\
 | `venv` | 虚拟环境创建/列出/删除 |
 | `ai` | AI 诊断 + 找包（OpenAI `/chat/completions` 与 Anthropic `/v1/messages` 两种格式） |
 | `osv` | OSV 漏洞批量扫描（api.osv.dev） |
-| `shim` / `winpath` | shim 生成/rehash、用户 PATH 注入（HKCU\Environment） |
+| `shim` / `winpath` | **（已停用接管）** 历史 shim 生成/PATH 注入代码保留；现仅 `shim::cleanup_legacy` 用于清理旧接管。pvm 不再修改系统 PATH，详见 §3.4 |
 | `cli` / `commands` | clap 定义 + CLI 命令分发（`src/main.rs` 是 CLI 入口；`bin/shim.rs`、`bin/shimw.rs` 是 shim） |
 
 ### 3.2 GUI（`gui/`，crate `pvm-gui`）
@@ -74,6 +74,18 @@ cd gui && cargo tauri build           # → target\release\pvm-gui.exe + bundle\
 前端 `window.__TAURI__.core.invoke('命令名', {参数})`。**Tauri 自动 snake_case↔camelCase**：后端 `py_exe` ↔ 前端 `pyExe`，`req_file`↔`reqFile` 等。事件用 `window.__TAURI__.event.listen`（如 `install://progress`、`batch://line`）。
 
 app.js 关键约定：每个面板一个 `renderXxx(c)` 函数（installed/packages/install/venv/mirror/settings），`render()` 按 `state.nav` 分发；列表/解释器缓存用 **localStorage**（key `pkgs:<py_exe>`、`interps`、`lastPy`），`prewarm()` 启动预热；模态用全局 `openModal/closeModal`。
+
+### 3.4 架构变更：pvm 不再接管系统 PATH（重要）
+
+早期版本仿 pyenv：把 `~/.pvm/shims` 注入用户 PATH 最前，所有 `python`/`pip` 经 shim 转发——这会**接管系统 python**，导致其它依赖系统 Python 的项目（无 pvm 生效版本时）被 shim 拦截报错。
+
+现已改为**纯管理器**：
+- `init` 不再注入 PATH、不部署 shims，并调 `shim::cleanup_legacy` 清理历史接管（移除 PATH 项 + 删 `~/.pvm/shims`）。
+- `pvm global/local`、装包、建 venv 都不再 `rehash`。`global` 退化为「GUI/venv 的默认解释器记忆」，不影响系统命令行。
+- pvm 下载的版本就是 `~/.pvm/versions\...` 下的普通 python.exe，与系统安装平等。使用方式：GUI「打开终端」（把所选解释器加进**本会话** PATH）、建 venv，或用户自行加 PATH。
+- 代价：放弃 `.python-version` 目录级**自动**切换（该能力依赖 shim 拦截 cwd）。
+- shim 子系统代码（`shim.rs`/`bin/shim.rs`/`winpath` 注入函数）保留但不再走生产路径，后续可清理。
+- `pvm rehash` 命令保留，语义改为「清理 pvm 对 PATH 的接管」。GUI 设置页诊断有「PATH 接管」告警，检测到残留时提示点初始化清理。
 
 ## 4. 功能总览（提交演进见 `git log`）
 

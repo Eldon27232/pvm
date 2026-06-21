@@ -12,7 +12,7 @@ use crate::resolve::{
 use crate::source_pbs::{self, PbsFlavor};
 use crate::source_pyorg;
 use crate::version::{parse_selector, PythonVersion, Source, VersionSelector};
-use crate::{shim, venv, winpath};
+use crate::{shim, venv};
 use std::path::Path;
 use std::process::Command as ProcCommand;
 
@@ -53,7 +53,6 @@ pub fn run(cli: Cli) -> Result<()> {
                 println!("已卸载 {}", v.canonical());
             }
             let _ = keep_venvs;
-            shim::rehash(&paths).ok();
         }
         Command::List {
             remote,
@@ -89,8 +88,7 @@ pub fn run(cli: Cli) -> Result<()> {
             Some(vs) => {
                 let v = resolve_installed(&parse_selector(&vs)?, default_source, &paths)?;
                 write_global(&paths, &v)?;
-                shim::rehash(&paths).ok();
-                println!("全局版本设为 {}", v.canonical());
+                println!("全局默认版本设为 {}（用于 GUI/venv 默认选择，不修改系统 PATH）", v.canonical());
             }
         },
         Command::Local { version, unset } => {
@@ -112,7 +110,6 @@ pub fn run(cli: Cli) -> Result<()> {
                     Some(vs) => {
                         let v = resolve_installed(&parse_selector(&vs)?, default_source, &paths)?;
                         std::fs::write(&dotfile, v.canonical())?;
-                        shim::rehash(&paths).ok();
                         println!("已写入 {} -> {}", dotfile.display(), v.canonical());
                     }
                 }
@@ -183,8 +180,8 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::PipMirror { cmd } => cmd_mirror(cmd, &paths)?,
         Command::Init { path_only } => cmd_init(&paths, path_only)?,
         Command::Rehash => {
-            shim::rehash(&paths)?;
-            println!("rehash 完成");
+            shim::cleanup_legacy(&paths)?;
+            println!("已清理 pvm 对系统 PATH 的接管（pvm 不再使用 shim）。");
         }
         Command::Doctor => cmd_doctor(&paths)?,
         Command::Root => println!("{}", paths.root.display()),
@@ -257,7 +254,6 @@ fn cmd_install(
         pip::pip_mirror_set(m, Scope::Global, None, false, paths)?;
         println!("已设置全局 pip 镜像: {m}");
     }
-    shim::rehash(paths).ok();
     Ok(())
 }
 
@@ -415,6 +411,8 @@ fn cmd_venv(cmd: VenvCmd, yes: bool, paths: &Paths) -> Result<()> {
             let opts = venv::VenvCreateOpts {
                 name: &name,
                 py_selector: python.as_deref(),
+                base_exe: None,
+                base_label: None,
                 in_project,
                 path: path.as_deref(),
                 clear,
@@ -425,7 +423,6 @@ fn cmd_venv(cmd: VenvCmd, yes: bool, paths: &Paths) -> Result<()> {
             let target = venv::venv_create(&opts, paths)?;
             println!("已创建 venv: {}", target.display());
             println!("{}", venv::activation_hint(&target));
-            shim::rehash(paths).ok();
         }
         VenvCmd::List => {
             let list = venv::venv_list(paths)?;
@@ -439,7 +436,6 @@ fn cmd_venv(cmd: VenvCmd, yes: bool, paths: &Paths) -> Result<()> {
         VenvCmd::Remove { name } => {
             venv::venv_remove(&name, paths, yes)?;
             println!("已删除 venv {name}");
-            shim::rehash(paths).ok();
         }
         VenvCmd::Path { name } => println!("{}", venv::venv_path(&name, paths).display()),
         VenvCmd::Which { name } => println!(
@@ -477,10 +473,8 @@ fn cmd_mirror(cmd: MirrorCmd, paths: &Paths) -> Result<()> {
     Ok(())
 }
 
-fn cmd_init(paths: &Paths, path_only: bool) -> Result<()> {
+fn cmd_init(paths: &Paths, _path_only: bool) -> Result<()> {
     for d in [
-        paths.bin(),
-        paths.shims(),
         paths.versions(),
         paths.venvs(),
         paths.cache(),
@@ -490,32 +484,13 @@ fn cmd_init(paths: &Paths, path_only: bool) -> Result<()> {
         std::fs::create_dir_all(d)?;
     }
 
-    let cur = std::env::current_exe()?;
-    let dir = cur.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-    for n in ["pvm-shim.exe", "pvm-shimw.exe", "pvm.exe"] {
-        let src = dir.join(n);
-        if src.exists() {
-            std::fs::copy(&src, paths.bin().join(n)).ok();
-        } else if n != "pvm.exe" {
-            eprintln!(
-                "警告: 未找到 {}（shim 将不可用，请确保与 pvm.exe 同目录）",
-                src.display()
-            );
-        }
-    }
+    // pvm 是纯管理器，不修改系统 PATH。清理历史 shim 对 PATH 的接管（若有）。
+    shim::cleanup_legacy(paths)?;
 
-    if !path_only {
-        shim::rehash(paths).ok();
-    }
-
-    let shims = paths.shims();
-    let _shims_str = shims.to_string_lossy().to_string();
-    #[cfg(windows)]
-    winpath::prepend_shims_to_user_path(&_shims_str, paths)?;
-
-    println!("已初始化 pvm。");
-    println!("  shims: {}", shims.display());
-    println!("请重开终端以使 PATH 生效。");
+    println!("已初始化 pvm（不修改系统 PATH）。");
+    println!("  root     : {}", paths.root.display());
+    println!("  versions : {}", paths.versions().display());
+    println!("使用所选解释器：在 GUI「打开终端」、为项目创建 venv，或自行把版本目录加入 PATH。");
     Ok(())
 }
 
